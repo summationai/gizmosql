@@ -81,7 +81,7 @@ jobs:
 
   test-performance:
     runs-on: ubuntu-latest
-    needs: test-pivot-functionality
+    needs: test-all-functionality
     
     steps:
     - uses: actions/checkout@v4
