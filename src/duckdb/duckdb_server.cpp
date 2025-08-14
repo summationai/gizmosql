@@ -27,6 +27,7 @@
 #include <chrono>
 #include <iomanip>
 #include <thread>
+#include <regex>
 
 #include <arrow/api.h>
 #include <arrow/flight/server.h>
@@ -50,6 +51,32 @@ using arrow::Status;
 namespace sql = flight::sql;
 
 namespace gizmosql::ddb {
+
+// Helper function to obfuscate sensitive information in SQL queries
+std::string ObfuscateSensitiveSQL(const std::string &sql) {
+  std::string result = sql;
+  
+  // Regex to match ATTACH statements with S3 credentials
+  // We need to handle multiple parameters, so we apply the regex repeatedly
+  std::regex attach_regex(
+    R"(([?&])(s3_access_key_id|s3_secret_access_key|aws_access_key_id|aws_secret_access_key|token|session_token)=([^&']+))",
+    std::regex::icase
+  );
+  
+  // Replace all sensitive parameter values with ***
+  result = std::regex_replace(result, attach_regex, "$1$2=***");
+  
+  // Also handle CREATE SECRET statements with various parameter names
+  // Matches KEY_ID, SECRET, PASSWORD, TOKEN, etc. with their values
+  std::regex secret_regex(
+    R"(((?:KEY_ID|SECRET|PASSWORD|TOKEN|ACCESS_KEY|SECRET_KEY)\s*['"])([^'"]+)(['"]))",
+    std::regex::icase
+  );
+  
+  result = std::regex_replace(result, secret_regex, "$1***$3");
+  
+  return result;
+}
 
 // Helper function to get current timestamp in ISO8601 format
 std::string GetISO8601Timestamp() {
@@ -390,7 +417,8 @@ class DuckDBFlightSqlServer::Impl {
     const std::string transaction_id = pair.second;
     
     if (print_queries_) {
-      LogMessage("INFO", "Client executing SQL statement: " + sql + " [component=duckdb_server]", log_format_);
+      std::string obfuscated_query = ObfuscateSensitiveSQL(sql);
+      LogMessage("INFO", "Client executing SQL statement: " + obfuscated_query + " [component=duckdb_server]", log_format_);
     }
     
     ARROW_ASSIGN_OR_RAISE(auto connection, GetConnection(context))
@@ -485,7 +513,8 @@ class DuckDBFlightSqlServer::Impl {
                                                     .prepared_statement_handle = handle};
 
     if (print_queries_) {
-      LogMessage("INFO", "Client running SQL command: " + request.query + " [component=duckdb_server]", log_format_);
+      std::string obfuscated_query = ObfuscateSensitiveSQL(request.query);
+      LogMessage("INFO", "Client running SQL command: " + obfuscated_query + " [component=duckdb_server]", log_format_);
     }
 
     return result;

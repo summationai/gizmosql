@@ -1,0 +1,16 @@
+GizmoSQL - Copyright © 2025 GizmoData LLC
+ Licensed under the Apache License, Version 2.0
+ https://www.apache.org/licenses/LICENSE-2.0
+----------------------------------------------
+----------------------------------------------
+Apache Arrow version: 21.0.0
+WARNING - TLS is disabled for the GizmoSQL server - this is NOT secure.
+/Users/rc/gizmosql/src/duckdb/duckdb_server.cpp:802: DuckDB version: v1.3.3-dev2072
+Running Init SQL command: 
+SET autoinstall_known_extensions = true;
+Running Init SQL command: 
+ SET autoload_known_extensions = true;
+Using database file: ":memory:"
+Print Queries option is set to: false
+GizmoSQL server version: v1.9.13 - with engine: DuckDB - will listen on grpc+tcp://0.0.0.0:31337
+GizmoSQL server - started

@@ -1,0 +1,16 @@
+{"level":"INFO","message":"GizmoSQL starting","copyright_year":2025,"license":"Apache License 2.0"}
+{"level":"INFO","message":"Apache Arrow version","version":"21.0.0"}
+{"level":"WARNING","message":"TLS is disabled for the GizmoSQL server - this is NOT secure"}
+{"level":"INFO","message":"DuckDB version: v1.3.3-dev2072","component":"duckdb_server"}
+{"level":"INFO","message":"Running Init SQL command","command":"SET autoinstall_known_extensions = true"}
+{"level":"INFO","message":"Running Init SQL command","command":" SET autoload_known_extensions = true"}
+{"level":"INFO","message":"Using database file","database":":memory:"}
+{"level":"INFO","message":"Print queries option","enabled":true}
+{"level":"INFO","message":"GizmoSQL server starting","version":"v1.9.13","engine":"DuckDB","location":"grpc+tcp://0.0.0.0:31337"}
+{"level":"INFO","message":"GizmoSQL server started"}
+{"level":"INFO","message":"Client executing SQL statement","query":"CREATE TABLE test_table (id INTEGER PRIMARY KEY, name VARCHAR(100), value DOUBLE)","component":"duckdb_server"}
+{"level":"INFO","message":"Client executing SQL statement","query":"INSERT INTO test_table VALUES (1, 'Alice', 100.5), (2, 'Bob', 200.75)","component":"duckdb_server"}
+{"level":"INFO","message":"Client executing SQL statement","query":"SELECT * FROM test_table WHERE value > 150","component":"duckdb_server"}
+{"level":"INFO","message":"Client executing SQL statement","query":"UPDATE test_table SET value = 300 WHERE id = 1","component":"duckdb_server"}
+{"level":"INFO","message":"Client executing SQL statement","query":"DELETE FROM test_table WHERE id = 2","component":"duckdb_server"}
+{"level":"INFO","message":"Client executing SQL statement","query":"SELECT COUNT(*) as cnt, SUM(value) as total FROM test_table","component":"duckdb_server"}

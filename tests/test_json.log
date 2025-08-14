@@ -1,0 +1,10 @@
+{"level":"INFO","message":"GizmoSQL starting","copyright_year":2025,"license":"Apache License 2.0"}
+{"level":"INFO","message":"Apache Arrow version","version":"21.0.0"}
+{"level":"WARNING","message":"TLS is disabled for the GizmoSQL server - this is NOT secure"}
+{"level":"INFO","message":"DuckDB version: v1.3.3-dev2072","component":"duckdb_server"}
+{"level":"INFO","message":"Running Init SQL command","command":"SET autoinstall_known_extensions = true"}
+{"level":"INFO","message":"Running Init SQL command","command":" SET autoload_known_extensions = true"}
+{"level":"INFO","message":"Using database file","database":":memory:"}
+{"level":"INFO","message":"Print queries option","enabled":false}
+{"level":"INFO","message":"GizmoSQL server starting","version":"v1.9.13","engine":"DuckDB","location":"grpc+tcp://0.0.0.0:31337"}
+{"level":"INFO","message":"GizmoSQL server started"}
