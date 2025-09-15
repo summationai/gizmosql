@@ -47,8 +47,6 @@
 #include "flight_sql_fwd.h"
 #include "session_context.h"
 #include "request_ctx.h"
-#include "gizmosql_session_middleware.h"
-#include "gizmosql_session_middleware_factory.h"
 
 
 using arrow::Result;
@@ -206,19 +204,53 @@ private:
     return std::nullopt;
   }
 
-  static Result<std::string> GetSessionID(const flight::ServerCallContext& context) {
-    const auto* base = context.GetMiddleware("session"); // returns ServerMiddleware*
-    auto* gizmosql_session_middleware =
-        dynamic_cast<const GizmoSQLSessionMiddleware*>(base);
-    if (!gizmosql_session_middleware)
-      return arrow::Status::Invalid("No GizmoSQL session middleware");
+  // A function to get the auth token from the context
+  static Result<std::string> GetAuthToken(const flight::ServerCallContext &context) {
+    auto incoming_headers = context.incoming_headers();
+    auto it = incoming_headers.find("authorization");
+    if (it == incoming_headers.end()) {
+      return Status::KeyError("Authorization header not found");
+    }
 
-    ARROW_ASSIGN_OR_RAISE(
-        auto session,
-        const_cast<GizmoSQLSessionMiddleware *>(gizmosql_session_middleware)
-        ->GetSession());
+    auto auth_header = it->second;
+    std::vector<std::string> parts;
+    boost::split(parts, auth_header, boost::is_any_of(" "));
+    if (parts.size() != 2) {
+      return Status::Invalid("Malformed authorization header");
+    }
 
-    return session->id();
+    return parts[1];
+  }
+
+  // A function to get the JSON from the decoded auth token
+  static Result<std::string> GetAuthTokenKeyValue(const std::string &auth_token,
+                                                  const std::string &key) {
+    try {
+      auto decoded = jwt::decode(auth_token);
+
+      for (auto &e : decoded.get_payload_json()) {
+        if (e.first == key) {
+          return e.second.to_str();
+        }
+      }
+      return Status::KeyError("Key: '", key, "' not found in token");
+    } catch (const std::exception &e) {
+      return Status::Invalid("Error decoding JWT token: ", e.what());
+    }
+  }
+
+  static Result<std::string> GetSessionID(const flight::ServerCallContext &context) {
+    auto auth_token = GetAuthToken(context);
+    if (!auth_token.ok()) {
+      return auth_token.status();
+    }
+
+    auto session_id = GetAuthTokenKeyValue(auth_token.ValueOrDie(), "session_id");
+    if (!session_id.ok()) {
+      return session_id.status();
+    }
+
+    return session_id.ValueOrDie();
   }
 
   arrow::Result<std::shared_ptr<ClientSession>> GetClientSession(
