@@ -67,7 +67,7 @@ It is originally **forked from [`sqlflite`](https://github.com/voltrondata/sqlfl
 
 | Component                                                                        | Version |
 |----------------------------------------------------------------------------------|---------|
-| [DuckDB](https://duckdb.org)                                                     | v1.3.2  |
+| [DuckDB](https://duckdb.org)                                                     | v1.4.0  |
 | [SQLite](https://sqlite.org)                                                     | 3.50.4  |
 | [Apache Arrow (Flight SQL)](https://arrow.apache.org/docs/format/FlightSql.html) | 21.0.0  |
 | [jwt-cpp](https://thalhammer.github.io/jwt-cpp/)                                 | v0.7.1  |
@@ -88,7 +88,7 @@ docker run --name gizmosql \
            --env TLS_ENABLED="1" \
            --env GIZMOSQL_PASSWORD="gizmosql_password" \
            --env PRINT_QUERIES="1" \
-           --pull missing \
+           --pull always \
            gizmodata/gizmosql:latest
 ```
 
@@ -97,15 +97,15 @@ The above command will automatically mount a very small TPC-H DuckDB database fi
 **Note**: You can disable TLS in the container by setting environment variable: `TLS_ENABLED` to "0" (default is "1" - enabled).  This is not recommended unless you are using an mTLS sidecar in Kubernetes or something similar, as it will be insecure.    
 
 ### Optional - open a different database file
-When running the Docker image - you can have it run your own DuckDB database file (the database must be built with DuckDB version: 1.3.2).   
+When running the Docker image - you can have it run your own DuckDB database file (the database must be built with DuckDB version: 1.4.0).   
 
 Prerequisite: DuckDB CLI   
-Install DuckDB CLI version [1.3.2](https://github.com/duckdb/duckdb/releases/tag/v1.3.2) - and make sure the executable is on your PATH.
+Install DuckDB CLI version [1.4.0](https://github.com/duckdb/duckdb/releases/tag/v1.4.0) - and make sure the executable is on your PATH.
 
 Platform Downloads:   
-[Linux x86-64](https://github.com/duckdb/duckdb/releases/download/v1.3.2/duckdb_cli-linux-amd64.zip)   
-[Linux arm64 (aarch64)](https://github.com/duckdb/duckdb/releases/download/v1.3.2/duckdb_cli-linux-arm64.zip)   
-[MacOS Universal](https://github.com/duckdb/duckdb/releases/download/v1.3.2/duckdb_cli-osx-universal.zip)
+[Linux x86-64](https://github.com/duckdb/duckdb/releases/download/v1.4.0/duckdb_cli-linux-amd64.zip)   
+[Linux arm64 (aarch64)](https://github.com/duckdb/duckdb/releases/download/v1.4.0/duckdb_cli-linux-arm64.zip)   
+[MacOS Universal](https://github.com/duckdb/duckdb/releases/download/v1.4.0/duckdb_cli-osx-universal.zip)
 
 In this example, we'll generate a new TPC-H Scale Factor 1 (1GB) database file, and then run the docker image to mount it:
 
@@ -131,7 +131,7 @@ docker run --name gizmosql \
            --publish 31337:31337 \
            --env TLS_ENABLED="1" \
            --env GIZMOSQL_PASSWORD="gizmosql_password" \
-           --pull missing \
+           --pull always \
            --mount type=bind,source=$(pwd),target=/opt/gizmosql/data \
            --env DATABASE_FILENAME="data/tpch_sf1.duckdb" \
            gizmodata/gizmosql:latest
@@ -155,7 +155,7 @@ docker run --name gizmosql \
            --env GIZMOSQL_PASSWORD="gizmosql_password" \
            --env PRINT_QUERIES="1" \
            --env INIT_SQL_COMMANDS="SET threads = 1; SET memory_limit = '1GB';" \
-           --pull missing \
+           --pull always \
            gizmodata/gizmosql:latest
 ```
 
@@ -257,7 +257,7 @@ version(): string
 
 Results:
 version():   [
-    "v1.3.2"
+    "v1.4.0"
   ]
 
 Total: 1
@@ -370,7 +370,7 @@ GizmoSQL - Copyright © 2025 GizmoData LLC
  https://www.apache.org/licenses/LICENSE-2.0
 Apache Arrow version: 21.0.0
 WARNING - TLS is disabled for the GizmoSQL server - this is insecure.
-DuckDB version: v1.3.2
+DuckDB version: v1.4.0
 Running Init SQL command: 
 SET autoinstall_known_extensions = true;
 Running Init SQL command: 
@@ -449,7 +449,7 @@ docker run --name gizmosql-slim \
            --env TLS_ENABLED="0" \
            --env GIZMOSQL_PASSWORD="gizmosql_password" \
            --env PRINT_QUERIES="1" \
-           --pull missing \
+           --pull always \
            gizmodata/gizmosql:latest-slim
 ```
 
