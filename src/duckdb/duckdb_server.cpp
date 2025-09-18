@@ -30,6 +30,7 @@
 #include <arrow/flight/server.h>
 #include <arrow/flight/sql/server.h>
 #include <arrow/flight/types.h>
+#include <arrow/util/logging.h>
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
@@ -775,6 +776,14 @@ public:
     ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     for (const auto& [name, value] : request.session_options) {
       if (name == "catalog" || name == "schema") {
+        GIZMOSQL_LOGKV_DYNAMIC(arrow::util::ArrowLogLevel::ARROW_INFO, "Session option set",
+                           {"peer", client_session->peer},
+                           {"kind", "options"},
+                           {"session_id", client_session->session_id},
+                           {"user", client_session->username},
+                           {"role", client_session->role},
+                           {name, std::get<std::string>(value)}
+        );
         ARROW_RETURN_NOT_OK(
             ExecuteSql(client_session->connection, "USE " + std::get<std::string>(value)))
         ;
