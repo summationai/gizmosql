@@ -1,4 +1,4 @@
-FROM 851725450642.dkr.ecr.us-west-2.amazonaws.com/datapipeline-base:python-3.12
+FROM 851725450642.dkr.ecr.us-west-2.amazonaws.com/python:3.12.11-arm
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
