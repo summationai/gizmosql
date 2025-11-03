@@ -1,4 +1,4 @@
-FROM python:3.12.11
+FROM 851725450642.dkr.ecr.us-west-2.amazonaws.com/python:3.12.11-arm
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
@@ -32,6 +32,12 @@ RUN case ${TARGETPLATFORM} in \
     unzip awscliv2.zip && \
     aws/install && \
     rm -f awscliv2.zip
+
+# Install libraries and debugging tools
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gdb \
+        && rm -rf /var/lib/apt/lists/*
 
 # Setup Azure Client (so we can copy Azure files to the container if needed)
 RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
@@ -112,4 +118,4 @@ EXPOSE 31337
 # Run a test to ensure that the server works...
 RUN scripts/test_gizmosql.sh
 
-ENTRYPOINT scripts/start_gizmosql.sh
+ENTRYPOINT scripts/start_gizmosql_debug.sh
