@@ -1,4 +1,4 @@
-FROM python:3.12.11
+FROM 851725450642.dkr.ecr.us-west-2.amazonaws.com/datapipeline-base:python-3.12
 
 ARG TARGETPLATFORM
 ARG TARGETARCH
