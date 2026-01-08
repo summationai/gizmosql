@@ -19,6 +19,8 @@
 #include "gizmosql_telemetry.h"
 #include "gizmosql_logging.h"
 
+#include <arrow/flight/server.h>
+
 #ifdef GIZMOSQL_WITH_OPENTELEMETRY
 #include <opentelemetry/trace/tracer.h>
 #include <opentelemetry/trace/span.h>
