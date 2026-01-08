@@ -114,6 +114,36 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 endif ()
 
+# --------------------- OpenTelemetry ---------------------
+# Build OpenTelemetry C++ SDK with OTLP exporters
+# This must come after Arrow (uses Arrow's bundled protobuf)
+
+set(ARROW_PROTOBUF_DIR "${CMAKE_BINARY_DIR}/third_party/src/arrow_project-build/protobuf_ep-install")
+configure_file(third_party/OpenTelemetry_CMakeLists.txt.in opentelemetry/CMakeLists.txt @ONLY)
+execute_process(COMMAND "${CMAKE_COMMAND}" -G "${CMAKE_GENERATOR}" . -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/opentelemetry"
+        RESULT_VARIABLE OTEL_CONFIG_RESULT
+        OUTPUT_VARIABLE OTEL_CONFIG_OUTPUT
+        ERROR_VARIABLE OTEL_CONFIG_ERROR
+)
+if(NOT OTEL_CONFIG_RESULT EQUAL 0)
+    message(FATAL_ERROR "OpenTelemetry configure failed:\nOutput: ${OTEL_CONFIG_OUTPUT}\nError: ${OTEL_CONFIG_ERROR}")
+endif()
+
+execute_process(COMMAND "${CMAKE_COMMAND}" --build . -- -j4
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/opentelemetry"
+        RESULT_VARIABLE OTEL_BUILD_RESULT
+        OUTPUT_VARIABLE OTEL_BUILD_OUTPUT
+        ERROR_VARIABLE OTEL_BUILD_ERROR
+)
+if(NOT OTEL_BUILD_RESULT EQUAL 0)
+    message(FATAL_ERROR "OpenTelemetry build failed:\nOutput: ${OTEL_BUILD_OUTPUT}\nError: ${OTEL_BUILD_ERROR}")
+endif()
+
+set(OTEL_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/opentelemetry")
+set(OTEL_INCLUDE_DIR "${OTEL_INSTALL_DIR}/include")
+set(OTEL_LIB_DIR "${OTEL_INSTALL_DIR}/lib")
+
 # --------------------- JWT-CPP ---------------------
 
 configure_file(third_party/JWTCPP_CMakeLists.txt.in jwt-cpp/CMakeLists.txt)
@@ -215,7 +245,9 @@ add_library(gizmosqlserver STATIC
         src/common/gizmosql_logging.cpp
         src/common/gizmosql_library.cpp
         src/common/gizmosql_security.cpp
+        src/common/gizmosql_telemetry.cpp
         src/common/access_log_middleware.cpp
+        src/common/telemetry_middleware.cpp
         src/common/health_service.cpp
         ${HEALTH_PROTO_SRCS}
         ${HEALTH_GRPC_SRCS}
@@ -244,6 +276,7 @@ target_include_directories(gizmosqlserver
         ${PROTOBUF_INCLUDE_DIR}
         ${GRPC_INCLUDE_DIR}
         ${ABSL_INCLUDE_DIR}
+        ${OTEL_INCLUDE_DIR}
 )
 
 target_link_libraries(gizmosqlserver
@@ -255,6 +288,17 @@ target_link_libraries(gizmosqlserver
         ${Boost_LIBRARIES}
         nlohmann_json::nlohmann_json
         ${GRPC_REFLECTION_LIBRARY}
+        # OpenTelemetry libraries (HTTP exporter only, no gRPC)
+        "${OTEL_LIB_DIR}/libopentelemetry_trace.a"
+        "${OTEL_LIB_DIR}/libopentelemetry_metrics.a"
+        "${OTEL_LIB_DIR}/libopentelemetry_common.a"
+        "${OTEL_LIB_DIR}/libopentelemetry_resources.a"
+        "${OTEL_LIB_DIR}/libopentelemetry_otlp_recordable.a"
+        "${OTEL_LIB_DIR}/libopentelemetry_http_client_curl.a"
+        "${OTEL_LIB_DIR}/libopentelemetry_exporter_otlp_http.a"
+        "${OTEL_LIB_DIR}/libopentelemetry_exporter_otlp_http_client.a"
+        "${OTEL_LIB_DIR}/libopentelemetry_exporter_otlp_http_metric.a"
+        "-lcurl"
         "-lresolv"
 )
 
