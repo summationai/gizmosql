@@ -22,9 +22,11 @@
 #include <chrono>
 #include <optional>
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
 #include <opentelemetry/trace/tracer.h>
 #include <opentelemetry/trace/span.h>
 #include <opentelemetry/metrics/meter.h>
+#endif
 
 namespace gizmosql {
 
@@ -77,8 +79,9 @@ void ShutdownTelemetry();
 // Check if telemetry is currently enabled and initialized.
 bool IsTelemetryEnabled() noexcept;
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
 // -----------------------------------------------------------------------------
-// Tracer Access
+// Tracer Access (only available with OpenTelemetry)
 // -----------------------------------------------------------------------------
 
 // Get the global tracer for creating spans.
@@ -86,7 +89,7 @@ bool IsTelemetryEnabled() noexcept;
 opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> GetTracer();
 
 // -----------------------------------------------------------------------------
-// Meter Access
+// Meter Access (only available with OpenTelemetry)
 // -----------------------------------------------------------------------------
 
 // Get the global meter for creating metrics instruments.
@@ -94,7 +97,7 @@ opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> GetTracer();
 opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Meter> GetMeter();
 
 // -----------------------------------------------------------------------------
-// Span Helpers
+// Span Helpers (only available with OpenTelemetry)
 // -----------------------------------------------------------------------------
 
 // RAII wrapper for creating and managing spans
@@ -138,8 +141,11 @@ class ScopedSpan {
   opentelemetry::trace::Scope scope_;
 };
 
+#endif  // GIZMOSQL_WITH_OPENTELEMETRY
+
 // -----------------------------------------------------------------------------
 // Metric Instruments (initialized lazily on first use)
+// These are available even without OpenTelemetry (as no-ops)
 // -----------------------------------------------------------------------------
 
 // Pre-defined metrics for common operations

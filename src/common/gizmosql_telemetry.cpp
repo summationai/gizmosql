@@ -22,6 +22,8 @@
 #include <atomic>
 #include <mutex>
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+
 // OpenTelemetry SDK headers
 #include <opentelemetry/sdk/trace/tracer_provider.h>
 #include <opentelemetry/sdk/trace/simple_processor.h>
@@ -46,6 +48,8 @@ namespace metrics_sdk = opentelemetry::sdk::metrics;
 namespace resource = opentelemetry::sdk::resource;
 namespace otlp = opentelemetry::exporter::otlp;
 
+#endif  // GIZMOSQL_WITH_OPENTELEMETRY
+
 namespace gizmosql {
 
 // -----------------------------------------------------------------------------
@@ -55,6 +59,8 @@ namespace gizmosql {
 static std::atomic<bool> g_telemetry_initialized{false};
 static std::atomic<bool> g_telemetry_enabled{false};
 static std::mutex g_init_mutex;
+
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
 
 // Metric instruments (created lazily, protected by g_metrics_mutex)
 static std::mutex g_metrics_mutex;
@@ -115,6 +121,8 @@ static resource::Resource CreateResource(const TelemetryConfig& config) {
   return resource::Resource::Create(attrs);
 }
 
+#endif  // GIZMOSQL_WITH_OPENTELEMETRY
+
 // -----------------------------------------------------------------------------
 // Initialization
 // -----------------------------------------------------------------------------
@@ -126,6 +134,7 @@ void InitTelemetry(const TelemetryConfig& config) {
     return;  // Already initialized
   }
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
   if (!config.enabled || config.exporter_type == OtlpExporterType::kNone) {
     GIZMOSQL_LOG(INFO) << "OpenTelemetry disabled";
     g_telemetry_initialized.store(true);
@@ -190,6 +199,13 @@ void InitTelemetry(const TelemetryConfig& config) {
   g_telemetry_initialized.store(true);
 
   GIZMOSQL_LOG(INFO) << "OpenTelemetry initialization complete";
+#else
+  // OpenTelemetry not compiled in - just mark as initialized but disabled
+  (void)config;  // Suppress unused parameter warning
+  GIZMOSQL_LOG(INFO) << "OpenTelemetry support not compiled in (build with -DWITH_OPENTELEMETRY=ON)";
+  g_telemetry_initialized.store(true);
+  g_telemetry_enabled.store(false);
+#endif
 }
 
 void ShutdownTelemetry() {
@@ -202,6 +218,7 @@ void ShutdownTelemetry() {
   // Disable telemetry first to prevent new operations from starting
   g_telemetry_enabled.store(false);
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
   GIZMOSQL_LOG(INFO) << "Shutting down OpenTelemetry...";
 
   // Shutdown tracer provider (flushes pending spans)
@@ -229,14 +246,17 @@ void ShutdownTelemetry() {
     g_metrics_initialized = false;
   }
 
-  g_telemetry_initialized.store(false);
-
   GIZMOSQL_LOG(INFO) << "OpenTelemetry shutdown complete";
+#endif
+
+  g_telemetry_initialized.store(false);
 }
 
 bool IsTelemetryEnabled() noexcept {
   return g_telemetry_enabled.load(std::memory_order_acquire);
 }
+
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
 
 // -----------------------------------------------------------------------------
 // Tracer / Meter Access
@@ -402,8 +422,37 @@ void RecordBytesTransferred(const std::string& direction, int64_t bytes) {
 
 }  // namespace metrics
 
+#else  // !GIZMOSQL_WITH_OPENTELEMETRY
+
+// Stub implementations when OpenTelemetry is not available
+namespace metrics {
+
+void RecordRpcCall(const std::string& /*method*/,
+                   const std::string& /*status*/,
+                   double /*duration_ms*/) {
+  // No-op when OpenTelemetry is not compiled in
+}
+
+void RecordQueryExecution(const std::string& /*operation*/,
+                          const std::string& /*status*/,
+                          double /*duration_ms*/) {
+  // No-op when OpenTelemetry is not compiled in
+}
+
+void RecordActiveConnections(int64_t /*count*/) {
+  // No-op when OpenTelemetry is not compiled in
+}
+
+void RecordBytesTransferred(const std::string& /*direction*/, int64_t /*bytes*/) {
+  // No-op when OpenTelemetry is not compiled in
+}
+
+}  // namespace metrics
+
+#endif  // GIZMOSQL_WITH_OPENTELEMETRY
+
 // -----------------------------------------------------------------------------
-// Configuration Helpers
+// Configuration Helpers (always available)
 // -----------------------------------------------------------------------------
 
 OtlpExporterType ParseExporterType(const std::string& type_str) {

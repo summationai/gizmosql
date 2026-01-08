@@ -19,6 +19,7 @@
 #include "gizmosql_telemetry.h"
 #include "gizmosql_logging.h"
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
 #include <opentelemetry/trace/tracer.h>
 #include <opentelemetry/trace/span.h>
 #include <opentelemetry/trace/scope.h>
@@ -26,6 +27,7 @@
 
 namespace trace_api = opentelemetry::trace;
 namespace trace_semconv = opentelemetry::trace::SemanticConventions;
+#endif
 
 namespace gizmosql {
 
@@ -59,6 +61,7 @@ static const char* FlightMethodName(flight::FlightMethod m) {
   }
 }
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
 // -----------------------------------------------------------------------------
 // SpanHolder: Encapsulates span lifecycle
 // -----------------------------------------------------------------------------
@@ -75,6 +78,12 @@ struct TelemetryMiddleware::SpanHolder {
     }
   }
 };
+#else
+// Dummy SpanHolder when OpenTelemetry is not available
+struct TelemetryMiddleware::SpanHolder {
+  // Empty placeholder
+};
+#endif
 
 // -----------------------------------------------------------------------------
 // TelemetryMiddleware Implementation
@@ -85,6 +94,7 @@ TelemetryMiddleware::TelemetryMiddleware(flight::FlightMethod method, std::strin
       peer_(std::move(peer)),
       start_time_(std::chrono::steady_clock::now()) {
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
   if (!IsTelemetryEnabled()) {
     return;
   }
@@ -109,6 +119,7 @@ TelemetryMiddleware::TelemetryMiddleware(flight::FlightMethod method, std::strin
   }
 
   span_holder_ = std::make_unique<SpanHolder>(std::move(span));
+#endif
 }
 
 TelemetryMiddleware::~TelemetryMiddleware() = default;
@@ -127,9 +138,10 @@ void TelemetryMiddleware::CallCompleted(const arrow::Status& status) {
   // Determine status string for metrics
   std::string status_str = status.ok() ? "OK" : status.CodeAsString();
 
-  // Record metrics
+  // Record metrics (works even without OpenTelemetry compiled in, as no-op)
   metrics::RecordRpcCall(FlightMethodName(method_), status_str, static_cast<double>(duration_ms));
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
   // Update span if telemetry is enabled
   if (span_holder_ && span_holder_->span) {
     auto& span = span_holder_->span;
@@ -187,6 +199,9 @@ void TelemetryMiddleware::CallCompleted(const arrow::Status& status) {
     }
     span->SetAttribute(trace_semconv::kRpcGrpcStatusCode, grpc_code);
   }
+#else
+  (void)status;  // Suppress unused warning when not using OpenTelemetry
+#endif
 
   // SpanHolder destructor will end the span
 }
