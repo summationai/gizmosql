@@ -361,7 +361,9 @@ target_link_libraries(gizmosqlserver
 
 # Link OpenTelemetry libraries if enabled.
 if(WITH_OPENTELEMETRY)
-    file(GLOB OTEL_STATIC_LIBS "${OTEL_LIB_DIR}/libopentelemetry*.a")
+    # OpenTelemetry installs additional static deps (notably Abseil) into the same prefix.
+    # Collect all static archives so the final static link can resolve transitive symbols.
+    file(GLOB OTEL_STATIC_LIBS "${OTEL_LIB_DIR}/*.a")
     if(NOT OTEL_STATIC_LIBS)
         message(FATAL_ERROR "No OpenTelemetry static libraries found in ${OTEL_LIB_DIR}")
     endif()
