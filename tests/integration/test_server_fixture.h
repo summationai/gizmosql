@@ -52,12 +52,11 @@ CreateFlightSQLServer(
     const bool& access_logging_enabled, const int32_t& query_timeout,
     const arrow::util::ArrowLogLevel& query_log_level,
     const arrow::util::ArrowLogLevel& auth_log_level, const int& health_port,
-    std::string health_check_query,
-    const bool& enable_instrumentation,
-    std::string instrumentation_db_path = "",
-    std::string instrumentation_catalog = "",
+    std::string health_check_query, const bool& enable_instrumentation,
+    std::string instrumentation_db_path = "", std::string instrumentation_catalog = "",
     std::string instrumentation_schema = "",
-    const bool& allow_cross_instance_tokens = false);
+    const bool& allow_cross_instance_tokens = false,
+    const bool& telemetry_enabled = false);
 
 // Cleanup function to reset global state between test suites
 void CleanupServerResources();
@@ -72,13 +71,14 @@ struct TestServerConfig {
   int health_port;
   std::string username;
   std::string password;
-  BackendType backend = BackendType::duckdb;    // Default to DuckDB for existing tests
-  bool enable_instrumentation = true;           // SQLite doesn't support instrumentation
-  std::string health_check_query = "";          // Empty uses default "SELECT 1"
-  std::string init_sql_commands = "";           // SQL commands to run on startup
-  std::string instrumentation_catalog = "";     // Catalog for instrumentation (if using DuckLake)
-  std::string instrumentation_schema = "";      // Schema within instrumentation catalog
-  bool allow_cross_instance_tokens = false;     // Allow tokens from other server instances
+  BackendType backend = BackendType::duckdb;  // Default to DuckDB for existing tests
+  bool enable_instrumentation = true;         // SQLite doesn't support instrumentation
+  std::string health_check_query = "";        // Empty uses default "SELECT 1"
+  std::string init_sql_commands = "";         // SQL commands to run on startup
+  std::string instrumentation_catalog =
+      "";  // Catalog for instrumentation (if using DuckLake)
+  std::string instrumentation_schema = "";   // Schema within instrumentation catalog
+  bool allow_cross_instance_tokens = false;  // Allow tokens from other server instances
 };
 
 /// CRTP-based test fixture template for integration tests.
@@ -129,7 +129,8 @@ class ServerTestFixture : public ::testing::Test {
 #ifdef GIZMOSQL_ENTERPRISE
     const char* license_file = std::getenv("GIZMOSQL_LICENSE_KEY_FILE");
     std::string license_path = license_file ? license_file : "";
-    auto license_status = gizmosql::enterprise::EnterpriseFeatures::Instance().Initialize(license_path);
+    auto license_status =
+        gizmosql::enterprise::EnterpriseFeatures::Instance().Initialize(license_path);
     if (!license_status.ok() && !license_path.empty()) {
       std::cerr << "Warning: Failed to initialize enterprise license: "
                 << license_status.ToString() << std::endl;
@@ -164,7 +165,8 @@ class ServerTestFixture : public ::testing::Test {
         /*instrumentation_db_path=*/"",
         /*instrumentation_catalog=*/config_.instrumentation_catalog,
         /*instrumentation_schema=*/config_.instrumentation_schema,
-        /*allow_cross_instance_tokens=*/config_.allow_cross_instance_tokens);
+        /*allow_cross_instance_tokens=*/config_.allow_cross_instance_tokens,
+        /*telemetry_enabled=*/false);
 
     ASSERT_TRUE(result.ok()) << "Failed to create server: " << result.status().ToString();
     server_ = *result;
