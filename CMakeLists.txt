@@ -68,11 +68,9 @@ set(ABSL_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/src/arrow_project-build/_dep
 file(GLOB_RECURSE ABSL_LIBRARIES "${ABSL_BUILD_DIR}/absl/*.a")
 add_library(arrow_absl INTERFACE)
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Use linker groups to handle circular dependencies in abseil
+    # Use an explicit RESCAN link-group to preserve archive ordering for static links.
     target_link_libraries(arrow_absl INTERFACE
-        -Wl,--start-group
-        ${ABSL_LIBRARIES}
-        -Wl,--end-group
+        "$<LINK_GROUP:RESCAN,${ABSL_LIBRARIES}>"
     )
 else()
     target_link_libraries(arrow_absl INTERFACE ${ABSL_LIBRARIES})
@@ -371,9 +369,7 @@ if(WITH_OPENTELEMETRY)
 
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_libraries(gizmosqlserver PRIVATE
-                -Wl,--start-group
-                ${OTEL_STATIC_LIBS}
-                -Wl,--end-group
+                "$<LINK_GROUP:RESCAN,${OTEL_STATIC_LIBS}>"
                 CURL::libcurl
         )
     else()
