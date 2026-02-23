@@ -62,6 +62,7 @@ jobs:
           options: |
             CMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
             GIZMOSQL_ENTERPRISE=ON
+            WITH_OPENTELEMETRY=ON
       
       - name: Zip artifacts
         run: |
