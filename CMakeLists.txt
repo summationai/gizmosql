@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 # --------------------- Enterprise Edition Option ---------------------
 option(GIZMOSQL_ENTERPRISE "Build with enterprise features (instrumentation, kill session)" ON)
+option(WITH_OPENTELEMETRY "Build with OpenTelemetry tracing/metrics support" OFF)
 
 if(GIZMOSQL_ENTERPRISE)
     message(STATUS "Building GizmoSQL Enterprise Edition")
@@ -54,6 +55,7 @@ execute_process(COMMAND "${CMAKE_COMMAND}" --build . --target grpc++_reflection
         COMMAND_ERROR_IS_FATAL ANY
 )
 set(ARROW_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/arrow")
+set(ARROW_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/src/arrow_project-build")
 
 find_package(Arrow REQUIRED PATHS ${ARROW_INSTALL_DIR} NO_DEFAULT_PATH)
 find_package(ArrowFlight REQUIRED PATHS ${ARROW_INSTALL_DIR} NO_DEFAULT_PATH)
@@ -145,6 +147,42 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 endif ()
 
+# --------------------- OpenTelemetry (Optional) ---------------------
+if(WITH_OPENTELEMETRY)
+    message(STATUS "Building with OpenTelemetry support")
+    find_package(CURL REQUIRED)
+
+    # Build OpenTelemetry C++ SDK with OTLP HTTP exporter.
+    # The template accepts the Arrow protobuf build path to avoid redundant protobuf builds.
+    set(ARROW_PROTOBUF_DIR "${ARROW_BUILD_DIR}/_deps/protobuf-build")
+    configure_file(third_party/OpenTelemetry_CMakeLists.txt.in opentelemetry/CMakeLists.txt @ONLY)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -G "${CMAKE_GENERATOR}" . -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/opentelemetry"
+            RESULT_VARIABLE OTEL_CONFIG_RESULT
+            OUTPUT_VARIABLE OTEL_CONFIG_OUTPUT
+            ERROR_VARIABLE OTEL_CONFIG_ERROR
+    )
+    if(NOT OTEL_CONFIG_RESULT EQUAL 0)
+        message(FATAL_ERROR "OpenTelemetry configure failed:\nOutput: ${OTEL_CONFIG_OUTPUT}\nError: ${OTEL_CONFIG_ERROR}")
+    endif()
+
+    execute_process(COMMAND "${CMAKE_COMMAND}" --build . --parallel 4
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/opentelemetry"
+            RESULT_VARIABLE OTEL_BUILD_RESULT
+            OUTPUT_VARIABLE OTEL_BUILD_OUTPUT
+            ERROR_VARIABLE OTEL_BUILD_ERROR
+    )
+    if(NOT OTEL_BUILD_RESULT EQUAL 0)
+        message(FATAL_ERROR "OpenTelemetry build failed:\nOutput: ${OTEL_BUILD_OUTPUT}\nError: ${OTEL_BUILD_ERROR}")
+    endif()
+
+    set(OTEL_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/opentelemetry")
+    set(OTEL_INCLUDE_DIR "${OTEL_INSTALL_DIR}/include")
+    set(OTEL_LIB_DIR "${OTEL_INSTALL_DIR}/lib")
+else()
+    message(STATUS "Building without OpenTelemetry support (use -DWITH_OPENTELEMETRY=ON to enable)")
+endif()
+
 # --------------------- JWT-CPP ---------------------
 
 configure_file(third_party/JWTCPP_CMakeLists.txt.in jwt-cpp/CMakeLists.txt)
@@ -176,8 +214,6 @@ find_package(Boost COMPONENTS program_options REQUIRED)
 # --------------------- gRPC Health Proto Generation ---------------------
 # Use Arrow's bundled protobuf and gRPC for proto generation
 # Arrow 23 uses FetchContent instead of ExternalProject, so paths changed
-set(ARROW_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/src/arrow_project-build")
-
 # Arrow 23 FetchContent paths
 set(PROTOC_EXECUTABLE "${ARROW_BUILD_DIR}/_deps/protobuf-build/protoc")
 set(GRPC_CPP_PLUGIN "${ARROW_BUILD_DIR}/_deps/grpc-build/grpc_cpp_plugin")
@@ -258,7 +294,9 @@ add_library(gizmosqlserver STATIC
         src/common/gizmosql_logging.cpp
         src/common/gizmosql_library.cpp
         src/common/gizmosql_security.cpp
+        src/common/gizmosql_telemetry.cpp
         src/common/access_log_middleware.cpp
+        src/common/telemetry_middleware.cpp
         src/common/health_service.cpp
         ${HEALTH_PROTO_SRCS}
         ${HEALTH_GRPC_SRCS}
@@ -290,6 +328,12 @@ target_include_directories(gizmosqlserver
         ${ABSL_INCLUDE_DIR}
 )
 
+# Add OpenTelemetry include directory and compile definition if enabled.
+if(WITH_OPENTELEMETRY)
+    target_include_directories(gizmosqlserver PRIVATE ${OTEL_INCLUDE_DIR})
+    target_compile_definitions(gizmosqlserver PRIVATE GIZMOSQL_WITH_OPENTELEMETRY)
+endif()
+
 # Add enterprise-specific include directories and compile definition
 if(GIZMOSQL_ENTERPRISE)
     target_include_directories(gizmosqlserver PRIVATE
@@ -314,6 +358,29 @@ target_link_libraries(gizmosqlserver
         ${GRPC_REFLECTION_LIBRARY}
         "-lresolv"
 )
+
+# Link OpenTelemetry libraries if enabled.
+if(WITH_OPENTELEMETRY)
+    file(GLOB OTEL_STATIC_LIBS "${OTEL_LIB_DIR}/libopentelemetry*.a")
+    if(NOT OTEL_STATIC_LIBS)
+        message(FATAL_ERROR "No OpenTelemetry static libraries found in ${OTEL_LIB_DIR}")
+    endif()
+    list(SORT OTEL_STATIC_LIBS)
+
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(gizmosqlserver PRIVATE
+                -Wl,--start-group
+                ${OTEL_STATIC_LIBS}
+                -Wl,--end-group
+                CURL::libcurl
+        )
+    else()
+        target_link_libraries(gizmosqlserver PRIVATE
+                ${OTEL_STATIC_LIBS}
+                CURL::libcurl
+        )
+    endif()
+endif()
 
 if (APPLE)
     # macOS-specific libraries and options

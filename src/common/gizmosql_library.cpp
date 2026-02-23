@@ -48,8 +48,10 @@
 #include "flight_sql_fwd.h"
 #include "gizmosql_logging.h"
 #include "gizmosql_security.h"
+#include "gizmosql_telemetry.h"
 #include "access_log_middleware.h"
 #include "health_service.h"
+#include "telemetry_middleware.h"
 #ifdef GIZMOSQL_ENTERPRISE
 #include "enterprise/enterprise_features.h"
 #include "enterprise/instrumentation/instrumentation_manager.h"
@@ -153,13 +155,13 @@ static std::string GetPrimaryIPAddress() {
 
 // Get system information for instrumentation and logging
 struct SystemInfo {
-  std::string os_platform;      // "linux" or "darwin"
-  std::string os_name;          // "Ubuntu 22.04 LTS", "macOS Sonoma", etc.
-  std::string os_version;       // "22.04", "14.0", etc.
-  std::string cpu_arch;         // "x86_64", "arm64", etc.
-  std::string cpu_model;        // "Apple M1 Pro", "Intel(R) Xeon(R)...", etc.
-  int cpu_count;                // Number of logical CPUs
-  int64_t memory_total_bytes;   // Total physical memory in bytes
+  std::string os_platform;     // "linux" or "darwin"
+  std::string os_name;         // "Ubuntu 22.04 LTS", "macOS Sonoma", etc.
+  std::string os_version;      // "22.04", "14.0", etc.
+  std::string cpu_arch;        // "x86_64", "arm64", etc.
+  std::string cpu_model;       // "Apple M1 Pro", "Intel(R) Xeon(R)...", etc.
+  int cpu_count;               // Number of logical CPUs
+  int64_t memory_total_bytes;  // Total physical memory in bytes
 };
 
 static SystemInfo GetSystemInfo() {
@@ -294,12 +296,10 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
     const fs::path& token_signature_verify_cert_path, const bool& access_logging_enabled,
     const int32_t& query_timeout, const arrow::util::ArrowLogLevel& query_log_level,
     const arrow::util::ArrowLogLevel& auth_log_level, const int& health_port,
-    const std::string& health_check_query,
-    const bool& enable_instrumentation,
+    const std::string& health_check_query, const bool& enable_instrumentation,
     const std::string& instrumentation_db_path,
-    const std::string& instrumentation_catalog,
-    const std::string& instrumentation_schema,
-    const bool& allow_cross_instance_tokens) {
+    const std::string& instrumentation_catalog, const std::string& instrumentation_schema,
+    const bool& allow_cross_instance_tokens, const bool& telemetry_enabled) {
   ARROW_ASSIGN_OR_RAISE(auto location,
                         (!tls_cert_path.empty())
                             ? flight::Location::ForGrpcTls(hostname, port)
@@ -309,9 +309,10 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
 
   // Log system information
   auto sys_info = GetSystemInfo();
-  GIZMOSQL_LOG(INFO) << "System: " << sys_info.os_name
-                     << " (" << sys_info.os_platform << "/" << sys_info.cpu_arch << ")";
-  GIZMOSQL_LOG(INFO) << "CPU: " << sys_info.cpu_model << " (" << sys_info.cpu_count << " cores)";
+  GIZMOSQL_LOG(INFO) << "System: " << sys_info.os_name << " (" << sys_info.os_platform
+                     << "/" << sys_info.cpu_arch << ")";
+  GIZMOSQL_LOG(INFO) << "CPU: " << sys_info.cpu_model << " (" << sys_info.cpu_count
+                     << " cores)";
   GIZMOSQL_LOG(INFO) << "Memory: " << FormatBytes(sys_info.memory_total_bytes);
 
   GIZMOSQL_LOG(INFO) << "Apache Arrow version: " << ARROW_VERSION_STRING;
@@ -345,6 +346,12 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
     GIZMOSQL_LOG(INFO) << "Access logging enabled";
   } else {
     GIZMOSQL_LOG(INFO) << "Access logging disabled";
+  }
+
+  if (telemetry_enabled) {
+    options.middleware.push_back(
+        {"telemetry", std::make_shared<TelemetryMiddlewareFactory>()});
+    GIZMOSQL_LOG(INFO) << "Telemetry middleware enabled";
   }
 
   if (!mtls_ca_cert_path.empty()) {
@@ -456,8 +463,8 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
         g_instrumentation_manager = *instr_result;
         duckdb_server->SetInstrumentationManager(g_instrumentation_manager);
         if (use_external_catalog) {
-          GIZMOSQL_LOG(INFO) << "Instrumentation enabled using catalog: "
-                             << instr_catalog << "." << instr_schema;
+          GIZMOSQL_LOG(INFO) << "Instrumentation enabled using catalog: " << instr_catalog
+                             << "." << instr_schema;
         } else {
           GIZMOSQL_LOG(INFO) << "Instrumentation enabled at: "
                              << g_instrumentation_manager->GetDbPath();
@@ -469,7 +476,8 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
         gizmosql::ddb::InstanceConfig instance_config{
             .instance_id = duckdb_server->GetInstanceId(),
             .gizmosql_version = PROJECT_VERSION,
-            .gizmosql_edition = gizmosql::enterprise::EnterpriseFeatures::Instance().GetEditionName(),
+            .gizmosql_edition =
+                gizmosql::enterprise::EnterpriseFeatures::Instance().GetEditionName(),
             .duckdb_version = duckdb_library_version(),
             .arrow_version = ARROW_VERSION_STRING,
             .hostname = GetActualHostname(),
@@ -517,8 +525,9 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
       auto sqlite_server =
           std::dynamic_pointer_cast<gizmosql::sqlite::SQLiteFlightSqlServer>(server);
       g_health_service = std::make_shared<GizmoSQLHealthServiceImpl>(
-          [weak_server = std::weak_ptr<gizmosql::sqlite::SQLiteFlightSqlServer>(
-               sqlite_server), health_check_query]() -> bool {
+          [weak_server =
+               std::weak_ptr<gizmosql::sqlite::SQLiteFlightSqlServer>(sqlite_server),
+           health_check_query]() -> bool {
             if (auto s = weak_server.lock()) {
               return s->ExecuteSql(health_check_query).ok();
             }
@@ -528,8 +537,9 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
       auto duckdb_server =
           std::dynamic_pointer_cast<gizmosql::ddb::DuckDBFlightSqlServer>(server);
       g_health_service = std::make_shared<GizmoSQLHealthServiceImpl>(
-          [weak_server = std::weak_ptr<gizmosql::ddb::DuckDBFlightSqlServer>(
-               duckdb_server), health_check_query]() -> bool {
+          [weak_server =
+               std::weak_ptr<gizmosql::ddb::DuckDBFlightSqlServer>(duckdb_server),
+           health_check_query]() -> bool {
             if (auto s = weak_server.lock()) {
               return s->ExecuteSql(health_check_query).ok();
             }
@@ -559,7 +569,8 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
     // This ensures we don't leave orphaned servers if main server initialization fails.
     if (g_health_service) {
       if (health_port > 0) {
-        auto plaintext_result = PlaintextHealthServer::Start(g_health_service, health_port);
+        auto plaintext_result =
+            PlaintextHealthServer::Start(g_health_service, health_port);
         if (plaintext_result.ok()) {
           g_plaintext_health_server = std::move(*plaintext_result);
         } else {
@@ -592,8 +603,8 @@ std::string SafeGetEnvVarValue(const std::string& env_var_name) {
 }
 
 arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> CreateFlightSQLServer(
-  const BackendType backend, fs::path& database_filename, std::string hostname,
-  int port, std::string username, std::string password, std::string secret_key,
+    const BackendType backend, fs::path& database_filename, std::string hostname,
+    int port, std::string username, std::string password, std::string secret_key,
     fs::path tls_cert_path, fs::path tls_key_path, fs::path mtls_ca_cert_path,
     std::string init_sql_commands, fs::path init_sql_commands_file,
     const bool& print_queries, const bool& read_only, std::string token_allowed_issuer,
@@ -601,12 +612,10 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> CreateFlightSQL
     const bool& access_logging_enabled, const int32_t& query_timeout,
     const arrow::util::ArrowLogLevel& query_log_level,
     const arrow::util::ArrowLogLevel& auth_log_level, const int& health_port,
-    std::string health_check_query,
-    const bool& enable_instrumentation,
-    std::string instrumentation_db_path,
-    std::string instrumentation_catalog,
-    std::string instrumentation_schema,
-    const bool& allow_cross_instance_tokens) {
+    std::string health_check_query, const bool& enable_instrumentation,
+    std::string instrumentation_db_path, std::string instrumentation_catalog,
+    std::string instrumentation_schema, const bool& allow_cross_instance_tokens,
+    const bool& telemetry_enabled) {
   // Validate and default the arguments to env var values where applicable
   if (database_filename.empty()) {
     GIZMOSQL_LOG(INFO)
@@ -634,7 +643,8 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> CreateFlightSQL
             "GIZMOSQL_PORT environment variable cannot be the same as health_port");
       }
       if (env_port > 0 && env_port < 65536) {
-        GIZMOSQL_LOG(INFO) << "Using GizmoSQL port from env var GIZMOSQL_PORT: " << env_port;
+        GIZMOSQL_LOG(INFO) << "Using GizmoSQL port from env var GIZMOSQL_PORT: "
+                           << env_port;
         port = env_port;
       } else {
         return arrow::Status::Invalid(
@@ -798,8 +808,8 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> CreateFlightSQL
       print_queries, token_allowed_issuer, token_allowed_audience,
       token_signature_verify_cert_path, access_logging_enabled, query_timeout,
       query_log_level, auth_log_level, health_port, health_check_query,
-      enable_instrumentation, instrumentation_db_path,
-      instrumentation_catalog, instrumentation_schema, allow_cross_instance_tokens);
+      enable_instrumentation, instrumentation_db_path, instrumentation_catalog,
+      instrumentation_schema, allow_cross_instance_tokens, telemetry_enabled);
 }
 
 arrow::Status StartFlightSQLServer(
@@ -829,25 +839,21 @@ void CleanupServerResources() {
 }  // namespace gizmosql
 
 extern "C" {
-int RunFlightSQLServer(const BackendType backend, fs::path database_filename,
-                       std::string hostname, const int& port, std::string username,
-                       std::string password, std::string secret_key,
-                       fs::path tls_cert_path, fs::path tls_key_path,
-                       fs::path mtls_ca_cert_path, std::string init_sql_commands,
-                       fs::path init_sql_commands_file, const bool& print_queries,
-                       const bool& read_only, std::string token_allowed_issuer,
-                       std::string token_allowed_audience,
-                       fs::path token_signature_verify_cert_path, std::string log_level,
-                       std::string log_format, std::string access_log,
-                       std::string log_file, int32_t query_timeout,
-                       std::string query_log_level, std::string auth_log_level,
-                       int health_port, std::string health_check_query,
-                       const bool& enable_instrumentation,
-                       std::string instrumentation_db_path,
-                       std::string instrumentation_catalog,
-                       std::string instrumentation_schema,
-                       std::string license_key_file,
-                       const bool& allow_cross_instance_tokens) {
+int RunFlightSQLServer(
+    const BackendType backend, fs::path database_filename, std::string hostname,
+    const int& port, std::string username, std::string password, std::string secret_key,
+    fs::path tls_cert_path, fs::path tls_key_path, fs::path mtls_ca_cert_path,
+    std::string init_sql_commands, fs::path init_sql_commands_file,
+    const bool& print_queries, const bool& read_only, std::string token_allowed_issuer,
+    std::string token_allowed_audience, fs::path token_signature_verify_cert_path,
+    std::string log_level, std::string log_format, std::string access_log,
+    std::string log_file, int32_t query_timeout, std::string query_log_level,
+    std::string auth_log_level, int health_port, std::string health_check_query,
+    const bool& enable_instrumentation, std::string instrumentation_db_path,
+    std::string instrumentation_catalog, std::string instrumentation_schema,
+    std::string license_key_file, const bool& allow_cross_instance_tokens,
+    std::string otel_enabled, std::string otel_exporter, std::string otel_endpoint,
+    std::string otel_service_name, std::string otel_headers) {
   // ---- Logging normalization (library-owned) ----------------
   auto pick = [&](std::string v, const char* env_name, std::string def) -> std::string {
     if (!v.empty()) return v;
@@ -925,7 +931,9 @@ int RunFlightSQLServer(const BackendType backend, fs::path database_filename,
 
   // Check if instrumentation is requested but not licensed
   if (enable_instrumentation && !enterprise.IsInstrumentationAvailable()) {
-    std::cerr << gizmosql::enterprise::EnterpriseFeatures::GetLicenseRequiredError("Instrumentation") << std::endl;
+    std::cerr << gizmosql::enterprise::EnterpriseFeatures::GetLicenseRequiredError(
+                     "Instrumentation")
+              << std::endl;
     return EXIT_FAILURE;
   }
 #else
@@ -939,15 +947,47 @@ int RunFlightSQLServer(const BackendType backend, fs::path database_filename,
 
   // In core edition, instrumentation is not available
   if (enable_instrumentation) {
-    std::cerr << "Error: Instrumentation is a commercially licensed enterprise feature.\n"
-              << "       Please provide a valid license key file via --license-key-file\n"
-              << "       or contact GizmoData sales at sales@gizmodata.com to obtain a license." << std::endl;
+    std::cerr
+        << "Error: Instrumentation is a commercially licensed enterprise feature.\n"
+        << "       Please provide a valid license key file via --license-key-file\n"
+        << "       or contact GizmoData sales at sales@gizmodata.com to obtain a license."
+        << std::endl;
     return EXIT_FAILURE;
   }
 #endif
 
-  GIZMOSQL_LOG(INFO) << "Overall Log Level is set to: "
-                     << lvl_s;
+  GIZMOSQL_LOG(INFO) << "Overall Log Level is set to: " << lvl_s;
+
+  std::string otel_enabled_s = pick(otel_enabled, "GIZMOSQL_OTEL_ENABLED", "off");
+  std::string otel_exporter_s = pick(otel_exporter, "GIZMOSQL_OTEL_EXPORTER", "http");
+  std::string otel_endpoint_s = pick(otel_endpoint, "GIZMOSQL_OTEL_ENDPOINT", "");
+  std::string otel_service_name_s =
+      pick(otel_service_name, "GIZMOSQL_OTEL_SERVICE_NAME", "gizmosql");
+  std::string otel_headers_s = pick(otel_headers, "GIZMOSQL_OTEL_HEADERS", "");
+
+  bool telemetry_enabled = false;
+  if (!parse_bool(otel_enabled_s, telemetry_enabled)) {
+    std::cerr << "Unknown otel-enabled '" << otel_enabled_s << "', defaulting to off\n";
+    telemetry_enabled = false;
+  }
+
+  if (telemetry_enabled) {
+    gizmosql::TelemetryConfig tel_config;
+    tel_config.enabled = true;
+    tel_config.exporter_type = gizmosql::ParseExporterType(otel_exporter_s);
+    tel_config.endpoint = otel_endpoint_s;
+    tel_config.service_name = otel_service_name_s;
+    tel_config.service_version = GIZMOSQL_SERVER_VERSION;
+    tel_config.headers = otel_headers_s;
+    tel_config.deployment_environment =
+        gizmosql::SafeGetEnvVarValue("GIZMOSQL_ENVIRONMENT");
+    if (tel_config.deployment_environment.empty()) {
+      tel_config.deployment_environment = gizmosql::SafeGetEnvVarValue("ENVIRONMENT");
+    }
+
+    gizmosql::InitTelemetry(tel_config);
+    telemetry_enabled = gizmosql::IsTelemetryEnabled();
+  }
 
   auto create_server_result = gizmosql::CreateFlightSQLServer(
       backend, database_filename, hostname, port, username, password, secret_key,
@@ -955,8 +995,8 @@ int RunFlightSQLServer(const BackendType backend, fs::path database_filename,
       init_sql_commands_file, print_queries, read_only, token_allowed_issuer,
       token_allowed_audience, token_signature_verify_cert_path, access_logging_enabled,
       query_timeout, query_level, auth_level, health_port, health_check_query,
-      enable_instrumentation, instrumentation_db_path,
-      instrumentation_catalog, instrumentation_schema, allow_cross_instance_tokens);
+      enable_instrumentation, instrumentation_db_path, instrumentation_catalog,
+      instrumentation_schema, allow_cross_instance_tokens, telemetry_enabled);
 
   if (create_server_result.ok()) {
     auto server_ptr = create_server_result.ValueOrDie();
@@ -977,7 +1017,8 @@ int RunFlightSQLServer(const BackendType backend, fs::path database_filename,
     }
 
     // Release sessions and statements BEFORE shutting down (needed for cleanup regardless of enterprise)
-    if (auto duckdb_server = std::dynamic_pointer_cast<gizmosql::ddb::DuckDBFlightSqlServer>(server_ptr)) {
+    if (auto duckdb_server =
+            std::dynamic_pointer_cast<gizmosql::ddb::DuckDBFlightSqlServer>(server_ptr)) {
       auto instance_id = duckdb_server->GetInstanceId();
       // Release statements and sessions first (closes their instrumentation records if enterprise)
       duckdb_server->ReleaseAllSessions();
@@ -1003,10 +1044,13 @@ int RunFlightSQLServer(const BackendType backend, fs::path database_filename,
     // Now safe to destroy the server
     server_ptr.reset();
 
+    gizmosql::ShutdownTelemetry();
+
     GIZMOSQL_LOG(INFO) << "GizmoSQL server - shutdown complete";
     return EXIT_SUCCESS;
   } else {
     // Handle the error
+    gizmosql::ShutdownTelemetry();
     std::cerr << "Error: " << create_server_result.status().ToString();
     return EXIT_FAILURE;
   }

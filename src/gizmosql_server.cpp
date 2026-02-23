@@ -115,7 +115,18 @@ int main(int argc, char** argv) {
               "Allow tokens issued by other server instances (with the same secret key) to be accepted. "
               "Default is false (strict mode - tokens must be from this instance). "
               "Useful for load-balanced deployments where clients may reconnect to different instances. "
-              "If not set, uses env var GIZMOSQL_ALLOW_CROSS_INSTANCE_TOKENS (1/true to enable).");
+              "If not set, uses env var GIZMOSQL_ALLOW_CROSS_INSTANCE_TOKENS (1/true to enable).")
+            // -------- OpenTelemetry controls --------
+            ("otel-enabled", po::value<std::string>()->default_value(""),
+             "Enable OpenTelemetry: on|off. If empty, uses env GIZMOSQL_OTEL_ENABLED or defaults to off.")
+            ("otel-exporter", po::value<std::string>()->default_value(""),
+             "OTLP exporter type: http|none. If empty, uses env GIZMOSQL_OTEL_EXPORTER or defaults to http.")
+            ("otel-endpoint", po::value<std::string>()->default_value(""),
+             "OTLP endpoint base URL. If empty, uses env GIZMOSQL_OTEL_ENDPOINT or defaults to http://localhost:4318.")
+            ("otel-service-name", po::value<std::string>()->default_value(""),
+             "Service name for telemetry. If empty, uses env GIZMOSQL_OTEL_SERVICE_NAME or defaults to 'gizmosql'.")
+            ("otel-headers", po::value<std::string>()->default_value(""),
+             "Optional OTLP headers for authentication (key=value,key2=value2). If empty, uses env GIZMOSQL_OTEL_HEADERS.");
 
   // clang-format on
 
@@ -240,18 +251,24 @@ int main(int argc, char** argv) {
     // Check env var fallback
     if (const char* env_val = std::getenv("GIZMOSQL_ENABLE_INSTRUMENTATION")) {
       std::string val(env_val);
-      enable_instrumentation = (val == "1" || val == "true" || val == "TRUE" || val == "True");
+      enable_instrumentation =
+          (val == "1" || val == "true" || val == "TRUE" || val == "True");
     }
   }
 
   std::string instrumentation_db_path =
-      vm.count("instrumentation-db-path") ? vm["instrumentation-db-path"].as<std::string>() : "";
+      vm.count("instrumentation-db-path")
+          ? vm["instrumentation-db-path"].as<std::string>()
+          : "";
 
   std::string instrumentation_catalog =
-      vm.count("instrumentation-catalog") ? vm["instrumentation-catalog"].as<std::string>() : "";
+      vm.count("instrumentation-catalog")
+          ? vm["instrumentation-catalog"].as<std::string>()
+          : "";
 
   std::string instrumentation_schema =
-      vm.count("instrumentation-schema") ? vm["instrumentation-schema"].as<std::string>() : "";
+      vm.count("instrumentation-schema") ? vm["instrumentation-schema"].as<std::string>()
+                                         : "";
 
   std::string license_key_file =
       vm.count("license-key-file") ? vm["license-key-file"].as<std::string>() : "";
@@ -261,9 +278,21 @@ int main(int argc, char** argv) {
     // Check env var fallback
     if (const char* env_val = std::getenv("GIZMOSQL_ALLOW_CROSS_INSTANCE_TOKENS")) {
       std::string val(env_val);
-      allow_cross_instance_tokens = (val == "1" || val == "true" || val == "TRUE" || val == "True");
+      allow_cross_instance_tokens =
+          (val == "1" || val == "true" || val == "TRUE" || val == "True");
     }
   }
+
+  std::string otel_enabled =
+      vm.count("otel-enabled") ? vm["otel-enabled"].as<std::string>() : "";
+  std::string otel_exporter =
+      vm.count("otel-exporter") ? vm["otel-exporter"].as<std::string>() : "";
+  std::string otel_endpoint =
+      vm.count("otel-endpoint") ? vm["otel-endpoint"].as<std::string>() : "";
+  std::string otel_service_name =
+      vm.count("otel-service-name") ? vm["otel-service-name"].as<std::string>() : "";
+  std::string otel_headers =
+      vm.count("otel-headers") ? vm["otel-headers"].as<std::string>() : "";
 
   return RunFlightSQLServer(
       backend, database_filename, hostname, port, username, password, secret_key,
@@ -273,5 +302,6 @@ int main(int argc, char** argv) {
       access_log, log_file, query_timeout, query_log_level, auth_log_level, health_port,
       health_check_query, enable_instrumentation, instrumentation_db_path,
       instrumentation_catalog, instrumentation_schema, license_key_file,
-      allow_cross_instance_tokens);
+      allow_cross_instance_tokens, otel_enabled, otel_exporter, otel_endpoint,
+      otel_service_name, otel_headers);
 }

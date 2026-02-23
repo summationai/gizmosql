@@ -390,6 +390,11 @@ GizmoSQL can be configured via environment variables or CLI flags. Below are the
 | enable-instrumentation / GIZMOSQL_ENABLE_INSTRUMENTATION | *[Enterprise]* Enable session instrumentation | false | --enable-instrumentation |
 | instrumentation-db-path / GIZMOSQL_INSTRUMENTATION_DB_PATH | *[Enterprise]* Path for instrumentation database | (same dir as main DB) | --instrumentation-db-path |
 | license-key-file / GIZMOSQL_LICENSE_KEY_FILE | *[Enterprise]* Path to license key file (JWT format) | none | --license-key-file, -L |
+| otel-enabled / GIZMOSQL_OTEL_ENABLED | Enable OpenTelemetry tracing/metrics: on\|off | off (if unset) | --otel-enabled |
+| otel-exporter / GIZMOSQL_OTEL_EXPORTER | OTLP exporter type: http\|none | http (if unset) | --otel-exporter |
+| otel-endpoint / GIZMOSQL_OTEL_ENDPOINT | OTLP endpoint base URL | http://localhost:4318 (if unset) | --otel-endpoint |
+| otel-service-name / GIZMOSQL_OTEL_SERVICE_NAME | Service name used in telemetry resource attributes | gizmosql (if unset) | --otel-service-name |
+| otel-headers / GIZMOSQL_OTEL_HEADERS | OTLP auth headers key=value,key2=value2 | none | --otel-headers |
 
 Notes and best practices:
 - Always set GIZMOSQL_PASSWORD in production.
@@ -398,6 +403,7 @@ Notes and best practices:
 - If SECRET_KEY is not provided, the server will create a random signing key; persist SECRET_KEY if you need stable JWTs across restarts.
 - For logging and fine-grained runtime tuning prefer the CLI flags; corresponding GIZMOSQL_* env vars are supported for containerized deployments.
 - When rotating instances, rotate GIZMOSQL_PASSWORD to avoid stale cached tokens from clients.
+- OpenTelemetry support is optional at build time and requires `-DWITH_OPENTELEMETRY=ON` when running CMake plus libcurl development headers (for example `libcurl4-openssl-dev` on Debian/Ubuntu).
 
 Example (disable TLS, set password):
 ```bash

@@ -71,6 +71,11 @@ enum class BackendType { duckdb, sqlite };
  * @param instrumentation_schema [Enterprise] Schema within the instrumentation catalog. Default is "main". If empty, uses env var GIZMOSQL_INSTRUMENTATION_SCHEMA, or defaults to "main".
  * @param license_key_file Path to the GizmoSQL Enterprise license key file (JWT format). If empty, uses env var GIZMOSQL_LICENSE_KEY_FILE. Required for enterprise features.
  * @param allow_cross_instance_tokens Allow tokens issued by other server instances (with the same secret key) to be accepted. Default is false (strict mode). Useful for load-balanced deployments where clients may reconnect to different instances.
+ * @param otel_enabled Enable OpenTelemetry (on/off). If empty, uses env var GIZMOSQL_OTEL_ENABLED.
+ * @param otel_exporter OTLP exporter type (http|none). If empty, uses env var GIZMOSQL_OTEL_EXPORTER.
+ * @param otel_endpoint OTLP endpoint base URL. If empty, uses env var GIZMOSQL_OTEL_ENDPOINT.
+ * @param otel_service_name Telemetry service name. If empty, uses env var GIZMOSQL_OTEL_SERVICE_NAME.
+ * @param otel_headers Optional OTLP headers in key=value,key2=value2 format. If empty, uses env var GIZMOSQL_OTEL_HEADERS.
  *
  * @return Returns an integer status code. 0 indicates success, and non-zero values indicate errors.
  */
@@ -98,12 +103,11 @@ int RunFlightSQLServer(
     std::string log_level = "", std::string log_format = "", std::string access_log = "",
     std::string log_file = "", int32_t query_timeout = 0,
     std::string query_log_level = "", std::string auth_log_level = "",
-    int health_port = DEFAULT_HEALTH_PORT,
-    std::string health_check_query = "",
-    const bool& enable_instrumentation = false,
-    std::string instrumentation_db_path = "",
-    std::string instrumentation_catalog = "",
-    std::string instrumentation_schema = "",
-    std::string license_key_file = "",
-    const bool& allow_cross_instance_tokens = false);
+    int health_port = DEFAULT_HEALTH_PORT, std::string health_check_query = "",
+    const bool& enable_instrumentation = false, std::string instrumentation_db_path = "",
+    std::string instrumentation_catalog = "", std::string instrumentation_schema = "",
+    std::string license_key_file = "", const bool& allow_cross_instance_tokens = false,
+    std::string otel_enabled = "", std::string otel_exporter = "",
+    std::string otel_endpoint = "", std::string otel_service_name = "",
+    std::string otel_headers = "");
 }
