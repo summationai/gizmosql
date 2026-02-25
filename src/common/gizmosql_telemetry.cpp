@@ -27,6 +27,8 @@
 #include <utility>
 
 #ifdef GIZMOSQL_WITH_OPENTELEMETRY
+#include <opentelemetry/context/propagation/global_propagator.h>
+#include <opentelemetry/context/propagation/text_map_propagator.h>
 #include <opentelemetry/context/context.h>
 #include <opentelemetry/exporters/otlp/otlp_http_exporter.h>
 #include <opentelemetry/exporters/otlp/otlp_http_metric_exporter.h>
@@ -38,7 +40,9 @@
 #include <opentelemetry/sdk/trace/batch_span_processor.h>
 #include <opentelemetry/sdk/trace/tracer_provider.h>
 #include <opentelemetry/trace/provider.h>
+#include <opentelemetry/trace/propagation/http_trace_context.h>
 
+namespace context_propagation_api = opentelemetry::context::propagation;
 namespace metrics_api = opentelemetry::metrics;
 namespace metrics_sdk = opentelemetry::sdk::metrics;
 namespace otlp = opentelemetry::exporter::otlp;
@@ -151,8 +155,13 @@ void InitTelemetry(const TelemetryConfig& config) {
         std::make_shared<trace_sdk::TracerProvider>(std::move(processor), resource_attrs);
     trace_api::Provider::SetTracerProvider(
         opentelemetry::nostd::shared_ptr<trace_api::TracerProvider>(provider));
+    auto propagator =
+        opentelemetry::nostd::shared_ptr<context_propagation_api::TextMapPropagator>(
+            new opentelemetry::trace::propagation::HttpTraceContext());
+    context_propagation_api::GlobalTextMapPropagator::SetGlobalPropagator(propagator);
     initialized_signal = true;
     GIZMOSQL_LOG(INFO) << "OpenTelemetry tracing enabled";
+    GIZMOSQL_LOG(INFO) << "OpenTelemetry trace context propagation enabled (W3C tracecontext)";
   }
 
   if (config.metrics_enabled) {
