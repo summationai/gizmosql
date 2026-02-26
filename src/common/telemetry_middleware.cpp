@@ -140,7 +140,7 @@ static uint64_t ParseDatadogTraceHighBits(std::string_view tags_header) {
 #ifdef GIZMOSQL_WITH_OPENTELEMETRY
 static std::optional<context_api::Context> BuildDatadogParentContext(
     const flight::CallHeaders& incoming_headers,
-    const context_api::Context& current_context) {
+    context_api::Context current_context) {
   const auto trace_id_header =
       GetHeaderIgnoreCase(incoming_headers, "x-datadog-trace-id");
   const auto parent_id_header =
@@ -184,11 +184,12 @@ static std::optional<context_api::Context> BuildDatadogParentContext(
     }
   }
 
-  const auto trace_id_span = opentelemetry::nostd::span<const uint8_t, trace_api::TraceId::kSize>(
-      trace_id_bytes);
+  const auto trace_id_span =
+      opentelemetry::nostd::span<const uint8_t, trace_api::TraceId::kSize>(
+          trace_id_bytes.data(), trace_api::TraceId::kSize);
   const auto parent_span_span =
       opentelemetry::nostd::span<const uint8_t, trace_api::SpanId::kSize>(
-          parent_span_bytes);
+          parent_span_bytes.data(), trace_api::SpanId::kSize);
   const trace_api::SpanContext span_context(
       trace_api::TraceId(trace_id_span), trace_api::SpanId(parent_span_span),
       trace_api::TraceFlags(static_cast<uint8_t>(
