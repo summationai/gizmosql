@@ -963,6 +963,8 @@ int RunFlightSQLServer(
   std::string otel_endpoint_s = pick(otel_endpoint, "GIZMOSQL_OTEL_ENDPOINT", "");
   std::string otel_service_name_s =
       pick(otel_service_name, "GIZMOSQL_OTEL_SERVICE_NAME", "gizmosql");
+  std::string otel_service_version_s =
+      pick("", "GIZMOSQL_OTEL_SERVICE_VERSION", GIZMOSQL_SERVER_VERSION);
   std::string otel_headers_s = pick(otel_headers, "GIZMOSQL_OTEL_HEADERS", "");
 
   bool telemetry_enabled = false;
@@ -977,7 +979,7 @@ int RunFlightSQLServer(
     tel_config.exporter_type = gizmosql::ParseExporterType(otel_exporter_s);
     tel_config.endpoint = otel_endpoint_s;
     tel_config.service_name = otel_service_name_s;
-    tel_config.service_version = GIZMOSQL_SERVER_VERSION;
+    tel_config.service_version = otel_service_version_s;
     tel_config.headers = otel_headers_s;
     tel_config.deployment_environment =
         gizmosql::SafeGetEnvVarValue("GIZMOSQL_ENVIRONMENT");

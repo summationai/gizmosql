@@ -26,6 +26,8 @@
 
 namespace gizmosql {
 
+class TelemetrySpanScope;
+
 class TelemetryMiddleware : public flight::ServerMiddleware {
  public:
   TelemetryMiddleware(flight::FlightMethod method, std::string peer,
@@ -35,6 +37,7 @@ class TelemetryMiddleware : public flight::ServerMiddleware {
   void SendingHeaders(flight::AddCallHeaders* outgoing_headers) override;
   void CallCompleted(const arrow::Status& status) override;
   std::string name() const override { return "telemetry"; }
+  std::shared_ptr<TelemetrySpanScope> ActivateSpanForCurrentThread() const;
 
  private:
   flight::FlightMethod method_;
@@ -53,5 +56,8 @@ class TelemetryMiddlewareFactory : public flight::ServerMiddlewareFactory {
                           const flight::ServerCallContext& ctx,
                           std::shared_ptr<flight::ServerMiddleware>* out) override;
 };
+
+std::shared_ptr<TelemetrySpanScope> ActivateTelemetrySpan(
+    const flight::ServerCallContext& ctx);
 
 }  // namespace gizmosql
