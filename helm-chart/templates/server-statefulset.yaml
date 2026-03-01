@@ -64,6 +64,10 @@ spec:
               value: duckdb
             - name: DATABASE_FILENAME
               value: {{ .Values.gizmoSQLServer.config.DATABASE_FILENAME }}
+            {{- if .Values.gizmoSQLServer.config.GIZMOSQL_OTEL_TENANT }}
+            - name: GIZMOSQL_OTEL_TENANT
+              value: {{ .Values.gizmoSQLServer.config.GIZMOSQL_OTEL_TENANT | quote }}
+            {{- end }}
             - name: GIZMOSQL_PASSWORD
               valueFrom:
                 secretKeyRef:

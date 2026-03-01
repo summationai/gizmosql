@@ -974,6 +974,15 @@ int RunFlightSQLServer(
   }
 
   if (telemetry_enabled) {
+    auto infer_tenant_from_db_instance = [](const std::string& db_instance_identifier) {
+      const std::string suffix = "-ducklake-instance";
+      auto suffix_pos = db_instance_identifier.find(suffix);
+      if (suffix_pos == std::string::npos || suffix_pos == 0) {
+        return std::string{};
+      }
+      return db_instance_identifier.substr(0, suffix_pos);
+    };
+
     gizmosql::TelemetryConfig tel_config;
     tel_config.enabled = true;
     tel_config.exporter_type = gizmosql::ParseExporterType(otel_exporter_s);
@@ -985,6 +994,20 @@ int RunFlightSQLServer(
         gizmosql::SafeGetEnvVarValue("GIZMOSQL_ENVIRONMENT");
     if (tel_config.deployment_environment.empty()) {
       tel_config.deployment_environment = gizmosql::SafeGetEnvVarValue("ENVIRONMENT");
+    }
+
+    // Optional tenant resource attribute:
+    // 1) explicit OTel tenant env, 2) generic tenant envs, 3) infer from DB instance id.
+    tel_config.tenant = gizmosql::SafeGetEnvVarValue("GIZMOSQL_OTEL_TENANT");
+    if (tel_config.tenant.empty()) {
+      tel_config.tenant = gizmosql::SafeGetEnvVarValue("GIZMOSQL_TENANT");
+    }
+    if (tel_config.tenant.empty()) {
+      tel_config.tenant = gizmosql::SafeGetEnvVarValue("TENANT");
+    }
+    if (tel_config.tenant.empty()) {
+      tel_config.tenant = infer_tenant_from_db_instance(
+          gizmosql::SafeGetEnvVarValue("DB_INSTANCE_IDENTIFIER"));
     }
 
     gizmosql::InitTelemetry(tel_config);

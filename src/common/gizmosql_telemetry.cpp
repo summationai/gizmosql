@@ -110,6 +110,9 @@ static resource::Resource CreateResource(const TelemetryConfig& config) {
   if (!config.deployment_environment.empty()) {
     attrs["deployment.environment"] = config.deployment_environment;
   }
+  if (!config.tenant.empty()) {
+    attrs["tenant"] = config.tenant;
+  }
   return resource::Resource::Create(attrs);
 }
 #endif

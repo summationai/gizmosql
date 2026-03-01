@@ -43,6 +43,7 @@ struct TelemetryConfig {
   std::string service_name = "gizmosql";
   std::string service_version;
   std::string deployment_environment;
+  std::string tenant;
   std::string headers;
 
   std::chrono::milliseconds export_interval{5000};

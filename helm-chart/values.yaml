@@ -5,6 +5,7 @@ gizmoSQLServer:
   config:
     DATABASE_BACKEND: duckdb
     DATABASE_FILENAME: data/TPC-H-small.duckdb
+    GIZMOSQL_OTEL_TENANT: ""
 
   image:
     repository: ghcr.io/gizmodata/gizmosql
