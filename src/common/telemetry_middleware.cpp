@@ -63,6 +63,30 @@ static bool HasHeaderIgnoreCase(const flight::CallHeaders& incoming_headers,
   return false;
 }
 
+static std::string GetEnvValue(const char* key) {
+  const char* value = std::getenv(key);
+  return value ? std::string(value) : std::string();
+}
+
+static std::string InferTenantFromDbInstance(const std::string& db_instance_identifier) {
+  static constexpr const char* kSuffix = "-ducklake-instance";
+  const size_t suffix_pos = db_instance_identifier.find(kSuffix);
+  if (suffix_pos == std::string::npos || suffix_pos == 0) {
+    return "";
+  }
+  return db_instance_identifier.substr(0, suffix_pos);
+}
+
+static std::string ResolveTenantForSpanTag() {
+  std::string tenant = GetEnvValue("GIZMOSQL_OTEL_TENANT");
+  if (tenant.empty()) tenant = GetEnvValue("GIZMOSQL_TENANT");
+  if (tenant.empty()) tenant = GetEnvValue("TENANT");
+  if (tenant.empty()) {
+    tenant = InferTenantFromDbInstance(GetEnvValue("DB_INSTANCE_IDENTIFIER"));
+  }
+  return tenant;
+}
+
 static const char* FlightMethodName(flight::FlightMethod method) {
   switch (method) {
     case flight::FlightMethod::Handshake:
@@ -194,6 +218,12 @@ TelemetryMiddleware::TelemetryMiddleware(flight::FlightMethod method, std::strin
   if (const char* service_version = std::getenv("GIZMOSQL_OTEL_SERVICE_VERSION");
       service_version != nullptr && service_version[0] != '\0') {
     span->SetAttribute("service.version", service_version);
+  }
+  {
+    std::string tenant = ResolveTenantForSpanTag();
+    if (!tenant.empty()) {
+      span->SetAttribute("tenant", tenant);
+    }
   }
 
   if (!peer_.empty()) {
