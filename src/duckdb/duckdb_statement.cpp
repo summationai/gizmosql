@@ -1046,6 +1046,11 @@ arrow::Result<int> DuckDBStatement::Execute() {
     status = future.wait_for(timeout_duration);
   }
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  auto post_wait_context_token =
+      opentelemetry::context::RuntimeContext::Attach(telemetry_context);
+#endif
+
   if (status == std::future_status::timeout) {
     if (log_queries_) {
       GIZMOSQL_LOGKV_SESSION(WARNING, client_session_, "Client SQL command timed out - begin statement interruption",
