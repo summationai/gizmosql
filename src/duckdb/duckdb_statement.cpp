@@ -29,24 +29,20 @@
 #include <future>
 #include <chrono>
 #include <regex>
-#include <array>
 
 #include <boost/algorithm/string.hpp>
 
 #include <arrow/api.h>
 #include <arrow/util/logging.h>
 #include <arrow/c/bridge.h>
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+#include <opentelemetry/context/runtime_context.h>
+#endif
 #include "duckdb_server.h"
 #include "session_context.h"
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
-#ifdef GIZMOSQL_WITH_OPENTELEMETRY
-#include <opentelemetry/context/runtime_context.h>
-#include <opentelemetry/nostd/span.h>
-#include <opentelemetry/trace/context.h>
-#include <opentelemetry/trace/span.h>
-#endif
 #ifdef GIZMOSQL_ENTERPRISE
 #include "enterprise/instrumentation/instrumentation_manager.h"
 #include "enterprise/instrumentation/instrumentation_records.h"
@@ -59,43 +55,11 @@
 using arrow::Status;
 using duckdb::QueryResult;
 
-namespace {
-
 #ifdef GIZMOSQL_WITH_OPENTELEMETRY
 namespace context_api = opentelemetry::context;
-namespace trace_api = opentelemetry::trace;
-
-struct TraceCorrelationIds {
-  std::string trace_id;
-  std::string span_id;
-};
-
-std::optional<TraceCorrelationIds> GetCurrentTraceCorrelationIds() {
-  auto span = trace_api::GetSpan(context_api::RuntimeContext::GetCurrent());
-  if (!span) {
-    return std::nullopt;
-  }
-
-  const auto span_context = span->GetContext();
-  if (!span_context.IsValid()) {
-    return std::nullopt;
-  }
-
-  constexpr std::size_t kTraceIdHexSize = 2 * trace_api::TraceId::kSize;
-  constexpr std::size_t kSpanIdHexSize = 2 * trace_api::SpanId::kSize;
-  std::array<char, kTraceIdHexSize> trace_id{};
-  std::array<char, kSpanIdHexSize> span_id{};
-
-  span_context.trace_id().ToLowerBase16(
-      opentelemetry::nostd::span<char, kTraceIdHexSize>(trace_id));
-  span_context.span_id().ToLowerBase16(
-      opentelemetry::nostd::span<char, kSpanIdHexSize>(span_id));
-
-  return TraceCorrelationIds{
-      std::string(trace_id.data(), trace_id.size()),
-      std::string(span_id.data(), span_id.size())};
-}
 #endif
+
+namespace {
 
 bool IsLikelyGizmoSQLSet(const std::string& sql) {
   std::string trimmed = sql;
@@ -530,20 +494,6 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
       {"session_id", client_session->session_id}, {"user", client_session->username},
       {"role", client_session->role}, {"statement_id", handle});
 
-  auto capture_trace_correlation_ids = [](const std::shared_ptr<DuckDBStatement>& statement) {
-#ifdef GIZMOSQL_WITH_OPENTELEMETRY
-    if (!statement) {
-      return;
-    }
-    if (auto trace_ids = GetCurrentTraceCorrelationIds()) {
-      statement->creation_trace_id_ = trace_ids->trace_id;
-      statement->creation_span_id_ = trace_ids->span_id;
-    }
-#else
-    (void)statement;
-#endif
-  };
-
   client_session->active_sql_handle = handle;
 
   // Get instance_id from server for GIZMOSQL_CURRENT_INSTANCE()
@@ -619,7 +569,6 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
     // Return a synthetic result for the successful KILL SESSION command
     std::shared_ptr<DuckDBStatement> result(new DuckDBStatement(
         client_session, handle, sql, effective_log_level, log_queries, override_schema));
-    capture_trace_correlation_ids(result);
     result->is_gizmosql_admin_ = true;
 
     // Create statement instrumentation for successful KILL SESSION
@@ -655,7 +604,6 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
   if (IsLikelyGizmoSQLSet(sql)) {
     std::shared_ptr<DuckDBStatement> result(new DuckDBStatement(
         client_session, handle, sql, effective_log_level, log_queries, override_schema));
-    capture_trace_correlation_ids(result);
     result->is_gizmosql_admin_ = true;
 
 #ifdef GIZMOSQL_ENTERPRISE
@@ -742,7 +690,6 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
 
       std::shared_ptr<DuckDBStatement> result(new DuckDBStatement(
           client_session, handle, sql, log_level, log_queries, override_schema));
-      capture_trace_correlation_ids(result);
 
 #ifdef GIZMOSQL_ENTERPRISE
       // Create statement instrumentation for direct execution
@@ -785,7 +732,6 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
 
   std::shared_ptr<DuckDBStatement> result(new DuckDBStatement(
       client_session, handle, stmt, log_level, log_queries, override_schema));
-  capture_trace_correlation_ids(result);
 
 #ifdef GIZMOSQL_ENTERPRISE
   // Create statement instrumentation for prepared statement
@@ -907,6 +853,12 @@ DuckDBStatement::DuckDBStatement(const std::shared_ptr<ClientSession>& client_se
   override_schema_ = override_schema;
   query_result_ = nullptr;
   client_context_ = stmt->context;
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  if (auto trace_ids = GetCurrentTraceCorrelationIds()) {
+    creation_trace_id_ = trace_ids->trace_id;
+    creation_span_id_ = trace_ids->span_id;
+  }
+#endif
 }
 
 DuckDBStatement::DuckDBStatement(const std::shared_ptr<ClientSession>& client_session,
@@ -926,6 +878,12 @@ DuckDBStatement::DuckDBStatement(const std::shared_ptr<ClientSession>& client_se
   override_schema_ = override_schema;
   query_result_ = nullptr;
   client_context_ = client_session->connection->context;
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  if (auto trace_ids = GetCurrentTraceCorrelationIds()) {
+    creation_trace_id_ = trace_ids->trace_id;
+    creation_span_id_ = trace_ids->span_id;
+  }
+#endif
 }
 
 arrow::Result<int> DuckDBStatement::Execute() {
@@ -933,6 +891,10 @@ arrow::Result<int> DuckDBStatement::Execute() {
 
   ARROW_ASSIGN_OR_RAISE(auto query_timeout, GetQueryTimeout());
   ARROW_ASSIGN_OR_RAISE(auto log_level, GetLogLevel());
+
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  ScopedLogCorrelation execute_log_correlation(creation_trace_id_, creation_span_id_);
+#endif
 
   // Generate execution ID for tracing (matches instrumentation table)
   std::string execution_id = boost::uuids::to_string(boost::uuids::random_generator()());
@@ -1011,10 +973,13 @@ arrow::Result<int> DuckDBStatement::Execute() {
       std::launch::async, [this, query_timeout, log_level
 #ifdef GIZMOSQL_WITH_OPENTELEMETRY
                            ,
-                           telemetry_context
+                           telemetry_context,
+                           statement_trace_id = creation_trace_id_,
+                           statement_span_id = creation_span_id_
 #endif
   ]() -> arrow::Result<int> {
 #ifdef GIZMOSQL_WITH_OPENTELEMETRY
+        ScopedLogCorrelation async_log_correlation(statement_trace_id, statement_span_id);
         auto telemetry_context_token =
             opentelemetry::context::RuntimeContext::Attach(telemetry_context);
         (void)telemetry_context_token;
@@ -1167,29 +1132,11 @@ arrow::Result<int> DuckDBStatement::Execute() {
 #endif
 
   if (log_queries_ && result.ok()) {
-#ifdef GIZMOSQL_WITH_OPENTELEMETRY
-    if (!GetCurrentTraceCorrelationIds().has_value() && !creation_trace_id_.empty() &&
-        !creation_span_id_.empty()) {
-      GIZMOSQL_LOGKV_SESSION_DYNAMIC(
-          log_level, client_session_, "Client SQL command execution succeeded",
-          {"kind", "sql"}, {"status", "success"}, {"statement_id", statement_id_},
-          {"trace_id", creation_trace_id_}, {"span_id", creation_span_id_},
-          {"direct_execution", use_direct_execution_ ? "true" : "false"},
-          {"duration_ms", GetLastExecutionDurationMs()}, {"sql", logged_sql_});
-    } else {
-      GIZMOSQL_LOGKV_SESSION_DYNAMIC(
-          log_level, client_session_, "Client SQL command execution succeeded",
-          {"kind", "sql"}, {"status", "success"}, {"statement_id", statement_id_},
-          {"direct_execution", use_direct_execution_ ? "true" : "false"},
-          {"duration_ms", GetLastExecutionDurationMs()}, {"sql", logged_sql_});
-    }
-#else
     GIZMOSQL_LOGKV_SESSION_DYNAMIC(
         log_level, client_session_, "Client SQL command execution succeeded",
         {"kind", "sql"}, {"status", "success"}, {"statement_id", statement_id_},
         {"direct_execution", use_direct_execution_ ? "true" : "false"},
         {"duration_ms", GetLastExecutionDurationMs()}, {"sql", logged_sql_});
-#endif
   }
 
   execute_status = "success";
@@ -1198,6 +1145,10 @@ arrow::Result<int> DuckDBStatement::Execute() {
 
 arrow::Result<std::shared_ptr<arrow::RecordBatch>> DuckDBStatement::FetchResult() {
   std::string status;
+
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  ScopedLogCorrelation fetch_log_correlation(creation_trace_id_, creation_span_id_);
+#endif
 
   GIZMOSQL_LOG_SCOPE_STATUS(
       DEBUG, "DuckDBStatement::FetchResult", status, {"peer", client_session_->peer},
@@ -1266,6 +1217,11 @@ std::shared_ptr<duckdb::PreparedStatement> DuckDBStatement::GetDuckDBStmt() cons
 arrow::Result<int64_t> DuckDBStatement::ExecuteUpdate() {
   std::string status;
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  ScopedLogCorrelation execute_update_log_correlation(creation_trace_id_,
+                                                      creation_span_id_);
+#endif
+
   GIZMOSQL_LOG_SCOPE_STATUS(
       DEBUG, "DuckDBStatement::ExecuteUpdate", status, {"peer", client_session_->peer},
       {"session_id", client_session_->session_id}, {"user", client_session_->username},
@@ -1300,6 +1256,10 @@ arrow::Result<int64_t> DuckDBStatement::ExecuteUpdate() {
 arrow::Result<std::shared_ptr<arrow::Schema>> DuckDBStatement::GetSchema() {
   std::string status;
 
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  ScopedLogCorrelation get_schema_log_correlation(creation_trace_id_, creation_span_id_);
+#endif
+
   GIZMOSQL_LOG_SCOPE_STATUS(
       DEBUG, "DuckDBStatement::GetSchema", status, {"peer", client_session_->peer},
       {"session_id", client_session_->session_id}, {"user", client_session_->username},
@@ -1328,6 +1288,11 @@ long DuckDBStatement::GetLastExecutionDurationMs() const {
 
 arrow::Result<std::shared_ptr<arrow::Schema>> DuckDBStatement::ComputeSchema() {
   std::string status;
+
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  ScopedLogCorrelation compute_schema_log_correlation(creation_trace_id_,
+                                                      creation_span_id_);
+#endif
 
   GIZMOSQL_LOG_SCOPE_STATUS(
       DEBUG, "DuckDBStatement::ComputeSchema", status, {"peer", client_session_->peer},
