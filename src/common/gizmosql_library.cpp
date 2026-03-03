@@ -1280,38 +1280,6 @@ int RunFlightSQLServer(const BackendType backend, fs::path database_filename,
   // ----------------------------------------------------------
   gizmosql::InitLogging(log_config);
 
-  // ---- OpenTelemetry initialization ----------------
-  std::string otel_enabled_s = pick(otel_enabled, "GIZMOSQL_OTEL_ENABLED", "off");
-  std::string otel_exporter_s = pick(otel_exporter, "GIZMOSQL_OTEL_EXPORTER", "http");
-  std::string otel_endpoint_s = pick(otel_endpoint, "GIZMOSQL_OTEL_ENDPOINT", "");
-  std::string otel_service_name_s = pick(otel_service_name, "GIZMOSQL_OTEL_SERVICE_NAME", "gizmosql");
-  std::string otel_headers_s = pick(otel_headers, "GIZMOSQL_OTEL_HEADERS", "");
-
-  bool telemetry_enabled = false;
-  if (!parse_bool(otel_enabled_s, telemetry_enabled)) {
-    std::cerr << "Unknown otel-enabled '" << otel_enabled_s << "', defaulting to off\n";
-    telemetry_enabled = false;
-  }
-
-  if (telemetry_enabled) {
-    gizmosql::TelemetryConfig tel_config;
-    tel_config.enabled = true;
-    tel_config.exporter_type = gizmosql::ParseExporterType(otel_exporter_s);
-    tel_config.endpoint = otel_endpoint_s;
-    tel_config.service_name = otel_service_name_s;
-    tel_config.service_version = GIZMOSQL_SERVER_VERSION;
-    tel_config.headers = otel_headers_s;
-
-    // Get deployment environment from standard env var if available
-    tel_config.deployment_environment = gizmosql::SafeGetEnvVarValue("GIZMOSQL_ENVIRONMENT");
-    if (tel_config.deployment_environment.empty()) {
-      tel_config.deployment_environment = gizmosql::SafeGetEnvVarValue("ENVIRONMENT");
-    }
-
-    gizmosql::InitTelemetry(tel_config);
-  }
-  // ----------------------------------------------------------
-
   auto now = std::chrono::system_clock::now();
   std::time_t currentTime = std::chrono::system_clock::to_time_t(now);
   std::tm* localTime = std::localtime(&currentTime);
