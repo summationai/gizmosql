@@ -7,6 +7,7 @@ include(ExternalProject)
 
 # Path to Arrow's bundled protobuf (set by parent CMake via configure_file @ONLY)
 set(PROTOBUF_INSTALL_DIR "@ARROW_PROTOBUF_DIR@")
+set(PROTOBUF_SOURCE_DIR "@CMAKE_BINARY_DIR@/third_party/src/arrow_project-build/_deps/protobuf-src")
 
 # Parent build directory (set by parent CMake via configure_file @ONLY)
 set(PARENT_BINARY_DIR "@CMAKE_BINARY_DIR@")
@@ -32,6 +33,9 @@ ExternalProject_Add(
       -DWITH_OTLP_HTTP=ON
       # Use Arrow's bundled protobuf
       -DProtobuf_DIR=${PROTOBUF_INSTALL_DIR}/cmake
+      -DProtobuf_LIBRARY=${PROTOBUF_INSTALL_DIR}/libprotobuf.a
+      -DProtobuf_INCLUDE_DIR=${PROTOBUF_SOURCE_DIR}/src
+      -DProtobuf_PROTOC_EXECUTABLE=${PROTOBUF_INSTALL_DIR}/protoc
       -Dprotobuf_MODULE_COMPATIBLE=ON
       # Build static libraries
       -DBUILD_SHARED_LIBS=OFF
