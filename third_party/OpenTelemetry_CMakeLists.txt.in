@@ -31,7 +31,7 @@ ExternalProject_Add(
       # Enable HTTP exporter with curl
       -DWITH_OTLP_HTTP=ON
       # Use Arrow's bundled protobuf
-      -DProtobuf_DIR=${PROTOBUF_INSTALL_DIR}/lib/cmake/protobuf
+      -DProtobuf_DIR=${PROTOBUF_INSTALL_DIR}/cmake
       -Dprotobuf_MODULE_COMPATIBLE=ON
       # Build static libraries
       -DBUILD_SHARED_LIBS=OFF

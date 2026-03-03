@@ -227,6 +227,7 @@ execute_process(COMMAND "${CMAKE_COMMAND}" --build .
 )
 
 set(DUCKDB_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/duckdb")
+set(ARROW_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/src/arrow_project-build")
 
 set(DUCKDB_LIBRARY_PATH "${DUCKDB_INSTALL_DIR}/lib/${LIB_PREFIX}duckdb_static${LIB_SUFFIX}")
 set(DUCKDB_INCLUDE_DIR "${DUCKDB_INSTALL_DIR}/include")
@@ -267,7 +268,7 @@ if(WITH_OPENTELEMETRY)
     # Build OpenTelemetry C++ SDK with OTLP exporters
     # This must come after Arrow (uses Arrow's bundled protobuf)
 
-    set(ARROW_PROTOBUF_DIR "${CMAKE_BINARY_DIR}/third_party/src/arrow_project-build/protobuf_ep-install")
+    set(ARROW_PROTOBUF_DIR "${ARROW_BUILD_DIR}/_deps/protobuf-build")
     configure_file(third_party/OpenTelemetry_CMakeLists.txt.in opentelemetry/CMakeLists.txt @ONLY)
     execute_process(COMMAND "${CMAKE_COMMAND}" -G "${CMAKE_GENERATOR}" . -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/opentelemetry"
@@ -342,8 +343,6 @@ find_package(Boost COMPONENTS program_options REQUIRED)
 # --------------------- gRPC Health Proto Generation ---------------------
 # Use Arrow's bundled protobuf and gRPC for proto generation
 # Arrow 23 uses FetchContent instead of ExternalProject, so paths changed
-set(ARROW_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/src/arrow_project-build")
-
 # Arrow 23 FetchContent paths
 set(PROTOC_EXECUTABLE "${ARROW_BUILD_DIR}/_deps/protobuf-build/protoc${EXE_SUFFIX}")
 set(GRPC_CPP_PLUGIN "${ARROW_BUILD_DIR}/_deps/grpc-build/grpc_cpp_plugin${EXE_SUFFIX}")
@@ -495,6 +494,10 @@ target_link_libraries(gizmosqlserver
 # Link OpenTelemetry libraries if enabled
 if(WITH_OPENTELEMETRY)
     find_package(CURL REQUIRED)
+    set(ARROW_PROTOBUF_LIBRARY "${ARROW_BUILD_DIR}/_deps/protobuf-build/${LIB_PREFIX}protobuf${LIB_SUFFIX}")
+    if(NOT EXISTS "${ARROW_PROTOBUF_LIBRARY}")
+        message(FATAL_ERROR "Arrow protobuf library not found at ${ARROW_PROTOBUF_LIBRARY}")
+    endif()
 
     # OpenTelemetry installs additional static deps (notably Abseil) into the same prefix.
     # Collect all static archives so the final static link can resolve transitive symbols.
@@ -507,11 +510,13 @@ if(WITH_OPENTELEMETRY)
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_libraries(gizmosqlserver PRIVATE
                 "$<LINK_GROUP:RESCAN,${OTEL_STATIC_LIBS}>"
+                ${ARROW_PROTOBUF_LIBRARY}
                 CURL::libcurl
         )
     else()
         target_link_libraries(gizmosqlserver PRIVATE
                 ${OTEL_STATIC_LIBS}
+                ${ARROW_PROTOBUF_LIBRARY}
                 CURL::libcurl
         )
     endif()
