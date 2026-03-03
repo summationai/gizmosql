@@ -5,9 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 
 include(ExternalProject)
 
-# Path to Arrow's bundled protobuf (set by parent CMake via configure_file @ONLY)
-set(PROTOBUF_INSTALL_DIR "@ARROW_PROTOBUF_DIR@")
-set(PROTOBUF_SOURCE_DIR "@CMAKE_BINARY_DIR@/third_party/src/arrow_project-build/_deps/protobuf-src")
+# Path to Arrow's bundled protobuf build directory
+set(PROTOBUF_BUILD_DIR "@ARROW_PROTOBUF_DIR@")
+set(PROTOBUF_INCLUDE_DIR "@ARROW_PROTOBUF_INCLUDE_DIR@")
+set(PROTOBUF_LIBRARY_PATH "@ARROW_PROTOBUF_LIBRARY_PATH@")
+set(PROTOC_EXECUTABLE "@ARROW_PROTOC_EXECUTABLE@")
 
 # Parent build directory (set by parent CMake via configure_file @ONLY)
 set(PARENT_BINARY_DIR "@CMAKE_BINARY_DIR@")
@@ -31,11 +33,12 @@ ExternalProject_Add(
       -DWITH_OTLP_GRPC=OFF
       # Enable HTTP exporter with curl
       -DWITH_OTLP_HTTP=ON
-      # Use Arrow's bundled protobuf
-      -DProtobuf_DIR=${PROTOBUF_INSTALL_DIR}/cmake
-      -DProtobuf_LIBRARY=${PROTOBUF_INSTALL_DIR}/libprotobuf.a
-      -DProtobuf_INCLUDE_DIR=${PROTOBUF_SOURCE_DIR}/src
-      -DProtobuf_PROTOC_EXECUTABLE=${PROTOBUF_INSTALL_DIR}/protoc
+      # Use Arrow's bundled protobuf from the Arrow 23 FetchContent build tree
+      -DProtobuf_DIR=${PROTOBUF_BUILD_DIR}/cmake
+      -DProtobuf_INCLUDE_DIR=${PROTOBUF_INCLUDE_DIR}
+      -DProtobuf_LIBRARY=${PROTOBUF_LIBRARY_PATH}
+      -DProtobuf_LIBRARIES=${PROTOBUF_LIBRARY_PATH}
+      -DProtobuf_PROTOC_EXECUTABLE=${PROTOC_EXECUTABLE}
       -Dprotobuf_MODULE_COMPATIBLE=ON
       # Build static libraries
       -DBUILD_SHARED_LIBS=OFF

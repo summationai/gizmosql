@@ -269,6 +269,11 @@ if(WITH_OPENTELEMETRY)
     # This must come after Arrow (uses Arrow's bundled protobuf)
 
     set(ARROW_PROTOBUF_DIR "${ARROW_BUILD_DIR}/_deps/protobuf-build")
+    set(ARROW_PROTOBUF_INCLUDE_DIR "${ARROW_BUILD_DIR}/_deps/protobuf-src/src")
+    set(ARROW_PROTOBUF_LIBRARY_PATH
+            "${ARROW_BUILD_DIR}/_deps/protobuf-build/${LIB_PREFIX}protobuf${LIB_SUFFIX}")
+    set(ARROW_PROTOC_EXECUTABLE
+            "${ARROW_BUILD_DIR}/_deps/protobuf-build/protoc${EXE_SUFFIX}")
     configure_file(third_party/OpenTelemetry_CMakeLists.txt.in opentelemetry/CMakeLists.txt @ONLY)
     execute_process(COMMAND "${CMAKE_COMMAND}" -G "${CMAKE_GENERATOR}" . -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/opentelemetry"
