@@ -122,6 +122,10 @@ class DuckDBStatement {
   std::shared_ptr<arrow::RecordBatch> synthetic_result_batch_;
   // Used to ensure thread-safe lazy init
   std::once_flag schema_once_flag_;
+#ifdef GIZMOSQL_WITH_OPENTELEMETRY
+  std::string creation_trace_id_;
+  std::string creation_span_id_;
+#endif
 
   DuckDBStatement(const std::shared_ptr<ClientSession>& client_session,
                   const std::string& handle,
