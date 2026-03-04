@@ -93,7 +93,7 @@ set(DOPUT_PATCH_NEW [[Status FlightSqlServerBase::DoPut(const ServerCallContext&
     internal_command.table_definition_options.if_not_exist =
         TableDefinitionOptionsTableNotExistOption::kCreate;
     internal_command.table_definition_options.if_exists =
-        TableDefinitionOptionsTableExistsOption::kAppend;
+        TableDefinitionOptionsTableExistsOption::kReplace;
     internal_command.table = path_parts[path_parts.size() - 1];
     if (path_parts.size() >= 2) {
       internal_command.schema = path_parts[path_parts.size() - 2];
