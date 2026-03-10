@@ -95,6 +95,12 @@ The following metric instruments are emitted:
 - `gizmosql.query.duration` (histogram, ms)
 - `gizmosql.bytes.transferred` (counter, By)
 - `gizmosql.connections.active` (up/down counter)
+- `gizmosql.duckdb.connections.open` (up/down counter)
+
+Metric semantics:
+
+- `gizmosql.connections.active` tracks active GizmoSQL sessions.
+- `gizmosql.duckdb.connections.open` tracks open DuckDB connection objects used by GizmoSQL, including session connections and internal utility/instrumentation connections.
 
 ### Logs
 

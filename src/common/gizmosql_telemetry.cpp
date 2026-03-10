@@ -69,6 +69,8 @@ static opentelemetry::nostd::unique_ptr<metrics_api::Counter<uint64_t>>
 static opentelemetry::nostd::unique_ptr<metrics_api::Counter<uint64_t>> g_bytes_counter;
 static opentelemetry::nostd::unique_ptr<metrics_api::UpDownCounter<int64_t>>
     g_active_connections;
+static opentelemetry::nostd::unique_ptr<metrics_api::UpDownCounter<int64_t>>
+    g_open_duckdb_connections;
 
 static otlp::OtlpHeaders ParseHeaders(const std::string& headers_str) {
   otlp::OtlpHeaders headers;
@@ -315,6 +317,8 @@ static void InitMetricsInstruments() {
                                                "Number of bytes transferred", "By");
   g_active_connections = meter->CreateInt64UpDownCounter(
       "gizmosql.connections.active", "Number of active connections", "1");
+  g_open_duckdb_connections = meter->CreateInt64UpDownCounter(
+      "gizmosql.duckdb.connections.open", "Number of open DuckDB connections", "1");
   g_metrics_initialized = true;
 }
 
@@ -351,6 +355,12 @@ void RecordActiveConnections(int64_t count) {
   g_active_connections->Add(count, {}, opentelemetry::context::Context{});
 }
 
+void RecordOpenDuckDBConnections(int64_t count) {
+  if (!IsTelemetryEnabled()) return;
+  InitMetricsInstruments();
+  g_open_duckdb_connections->Add(count, {}, opentelemetry::context::Context{});
+}
+
 void RecordBytesTransferred(const std::string& direction, int64_t bytes) {
   if (!IsTelemetryEnabled() || bytes < 0) return;
   InitMetricsInstruments();
@@ -369,6 +379,7 @@ namespace metrics {
 void RecordRpcCall(const std::string&, const std::string&, double) {}
 void RecordQueryExecution(const std::string&, const std::string&, double) {}
 void RecordActiveConnections(int64_t) {}
+void RecordOpenDuckDBConnections(int64_t) {}
 void RecordBytesTransferred(const std::string&, int64_t) {}
 
 }  // namespace metrics
