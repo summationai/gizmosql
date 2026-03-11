@@ -47,6 +47,9 @@ jobs:
             docker --version
           fi
 
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
+
           docker buildx create --use --name mybuilder --driver docker-container
           aws --version
       
@@ -62,6 +65,7 @@ jobs:
           options: |
             CMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
             GIZMOSQL_ENTERPRISE=ON
+            WITH_OPENTELEMETRY=ON
       
       - name: Zip artifacts
         run: |
