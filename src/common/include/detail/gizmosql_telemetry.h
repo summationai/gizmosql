@@ -53,7 +53,7 @@ struct TelemetryConfig {
 
   // Export intervals
   std::chrono::milliseconds export_interval{5000};
-  std::chrono::milliseconds export_timeout{30000};
+  std::chrono::milliseconds export_timeout{4000};
 
   // Optional headers for authentication (e.g., DD-API-KEY)
   std::string headers;
