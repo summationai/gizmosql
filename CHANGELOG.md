@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Query and auth log levels now act as visibility thresholds**: When `--query-log-level` or `--auth-log-level` is set to `error`, routine INFO-level messages (e.g., "SQL command execution succeeded", "Successfully authenticated") are now properly suppressed instead of being promoted to ERROR severity. The component log level controls whether a message appears at all; the display severity always reflects the message's true nature ([#136](https://github.com/gizmodata/gizmosql/issues/136)).
 ### Changed
 
+- **`--otel-enabled` flag changed from string to boolean**: The `--otel-enabled` CLI flag now uses a boolean value (`true`/`false`) instead of string (`on`/`off`), consistent with all other boolean CLI flags. The `GIZMOSQL_OTEL_ENABLED` environment variable accepts `1`/`true` to enable.
 - **Python ADBC docs updated for v1.1.0**: All documentation examples now use `cursor.execute()` for DDL/DML statements instead of `cursor.execute_update()`, reflecting the new auto-detection in `adbc-driver-gizmosql` v1.1.0. The `execute_update()` method remains available for when the rows-affected count is needed.
+
+- **Environment variable handling consolidated in library**: All boolean env var fallbacks (`GIZMOSQL_ENABLE_INSTRUMENTATION`, `GIZMOSQL_ALLOW_CROSS_INSTANCE_TOKENS`, `GIZMOSQL_OAUTH_DISABLE_TLS`, `GIZMOSQL_OTEL_ENABLED`) are now resolved in `RunFlightSQLServer()` in the library, ensuring consistent behavior for both the CLI executable and direct C API users.
+
+### Fixed
+
+- **Duplicate OpenTelemetry initialization**: Removed a duplicate OTel initialization block in `RunFlightSQLServer` that was introduced during the merge of PR #97.
 
 ## [1.18.5] - 2026-02-26
 
