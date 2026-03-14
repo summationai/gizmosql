@@ -326,7 +326,7 @@ TEST_F(CatalogMetadataRestrictionFixture, ShowDatabasesShowsOnlyAllowedCatalog) 
   EXPECT_EQ(catalogs[0], kAllowedCatalog);
 }
 
-TEST_F(CatalogMetadataRestrictionFixture, ShowAllTablesShowsOnlyAllowedCatalog) {
+TEST_F(CatalogMetadataRestrictionFixture, ShowAllTablesIsDenied) {
   SKIP_WITHOUT_LICENSE();
   ASSERT_TRUE(IsServerReady()) << "Server not ready";
 
@@ -334,14 +334,10 @@ TEST_F(CatalogMetadataRestrictionFixture, ShowAllTablesShowsOnlyAllowedCatalog) 
   auto call_options = GetCallOptionsWithToken(token);
   ASSERT_ARROW_OK_AND_ASSIGN(auto client, CreateClientWithToken(token));
 
-  ASSERT_ARROW_OK_AND_ASSIGN(auto table,
-                             ExecuteToTable(*client, call_options, "SHOW ALL TABLES"));
-
-  auto catalogs = GetStringColumnValues(table, "database");
-  ASSERT_FALSE(catalogs.empty());
-  for (const auto& catalog : catalogs) {
-    EXPECT_EQ(catalog, kAllowedCatalog);
-  }
+  auto result = client->Execute(call_options, "SHOW ALL TABLES");
+  ASSERT_FALSE(result.ok());
+  ASSERT_NE(result.status().ToString().find("SHOW ALL TABLES is not allowed"),
+            std::string::npos);
 }
 
 TEST_F(CatalogMetadataRestrictionFixture, InformationSchemaTablesShowsOnlyAllowedCatalog) {

@@ -239,27 +239,6 @@ std::string BuildRestrictedShowDatabasesSql(
   query << " ORDER BY database_name";
   return query.str();
 }
-
-std::string BuildRestrictedShowAllTablesSql(
-    const gizmosql::enterprise::MetadataCatalogFilter& metadata_filter) {
-  std::stringstream query;
-  query << "SELECT t.database_name AS database, "
-           "t.schema_name AS schema, "
-           "t.table_name AS name, "
-           "LIST(c.column_name ORDER BY c.column_index) AS column_names, "
-           "LIST(c.data_type ORDER BY c.column_index) AS column_types, "
-           "t.temporary "
-           "FROM duckdb_tables() AS t "
-           "LEFT JOIN duckdb_columns() AS c "
-           "ON t.database_name = c.database_name "
-           "AND t.schema_name = c.schema_name "
-           "AND t.table_name = c.table_name "
-           "WHERE 1 = 1";
-  query << BuildInlineMetadataCatalogFilterSql(metadata_filter, "t.database_name");
-  query << " GROUP BY t.database_name, t.schema_name, t.table_name, t.temporary "
-           "ORDER BY database, schema, name";
-  return query.str();
-}
 #endif
 
 bool CatalogExistsOnConnection(const std::shared_ptr<duckdb::Connection>& connection,
@@ -841,7 +820,9 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
       if (IsShowDatabasesQuery(sql)) {
         effective_sql = BuildRestrictedShowDatabasesSql(metadata_filter);
       } else if (IsShowAllTablesQuery(sql)) {
-        effective_sql = BuildRestrictedShowAllTablesSql(metadata_filter);
+        return Status::Invalid(
+            "Access denied: SHOW ALL TABLES is not allowed for catalog-restricted "
+            "tokens. Use SHOW TABLES after selecting an allowed catalog.");
       } else if (QueryTouchesRestrictedMetadataSource(upper_sql)) {
         if (IsRestrictedMetadataQueryTooComplex(upper_sql)) {
           return Status::Invalid(
