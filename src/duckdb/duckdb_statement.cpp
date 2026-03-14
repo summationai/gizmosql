@@ -172,6 +172,96 @@ std::optional<std::string> TryExtractUseCatalogName(const std::string& sql) {
   return first_identifier;
 }
 
+#ifdef GIZMOSQL_ENTERPRISE
+std::string QuoteSqlStringLiteral(const std::string& value) {
+  std::string quoted = "'";
+  for (char ch : value) {
+    if (ch == '\'') {
+      quoted += "''";
+    } else {
+      quoted += ch;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+std::string BuildInlineMetadataCatalogFilterSql(
+    const gizmosql::enterprise::MetadataCatalogFilter& filter,
+    const std::string& column_name) {
+  if (!filter.IsRestricted()) {
+    return "";
+  }
+
+  if (filter.mode == gizmosql::enterprise::MetadataCatalogFilterMode::kAllowOnly &&
+      filter.catalogs.empty()) {
+    return " AND 1 = 0";
+  }
+
+  if (filter.catalogs.empty()) {
+    return "";
+  }
+
+  std::stringstream predicate;
+  predicate << " AND " << column_name << " "
+            << (filter.mode == gizmosql::enterprise::MetadataCatalogFilterMode::kAllowOnly
+                    ? "IN ("
+                    : "NOT IN (");
+
+  for (size_t i = 0; i < filter.catalogs.size(); ++i) {
+    if (i > 0) {
+      predicate << ", ";
+    }
+    predicate << QuoteSqlStringLiteral(filter.catalogs[i]);
+  }
+
+  predicate << ")";
+  return predicate.str();
+}
+
+bool IsShowDatabasesQuery(const std::string& sql) {
+  static const std::regex show_databases_pattern(
+      R"(^\s*SHOW\s+DATABASES\s*;?\s*$)", std::regex_constants::icase);
+  return std::regex_match(sql, show_databases_pattern);
+}
+
+bool IsShowAllTablesQuery(const std::string& sql) {
+  static const std::regex show_all_tables_pattern(
+      R"(^\s*SHOW\s+ALL\s+TABLES\s*;?\s*$)", std::regex_constants::icase);
+  return std::regex_match(sql, show_all_tables_pattern);
+}
+
+std::string BuildRestrictedShowDatabasesSql(
+    const gizmosql::enterprise::MetadataCatalogFilter& metadata_filter) {
+  std::stringstream query;
+  query << "SELECT database_name FROM duckdb_databases() WHERE 1 = 1";
+  query << BuildInlineMetadataCatalogFilterSql(metadata_filter, "database_name");
+  query << " ORDER BY database_name";
+  return query.str();
+}
+
+std::string BuildRestrictedShowAllTablesSql(
+    const gizmosql::enterprise::MetadataCatalogFilter& metadata_filter) {
+  std::stringstream query;
+  query << "SELECT t.database_name AS database, "
+           "t.schema_name AS schema, "
+           "t.table_name AS name, "
+           "LIST(c.column_name ORDER BY c.column_index) AS column_names, "
+           "LIST(c.data_type ORDER BY c.column_index) AS column_types, "
+           "t.temporary "
+           "FROM duckdb_tables() AS t "
+           "LEFT JOIN duckdb_columns() AS c "
+           "ON t.database_name = c.database_name "
+           "AND t.schema_name = c.schema_name "
+           "AND t.table_name = c.table_name "
+           "WHERE 1 = 1";
+  query << BuildInlineMetadataCatalogFilterSql(metadata_filter, "t.database_name");
+  query << " GROUP BY t.database_name, t.schema_name, t.table_name, t.temporary "
+           "ORDER BY database, schema, name";
+  return query.str();
+}
+#endif
+
 bool CatalogExistsOnConnection(const std::shared_ptr<duckdb::Connection>& connection,
                                const std::string& catalog_name) {
   auto stmt = connection->Prepare(
@@ -746,15 +836,20 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
 
     auto metadata_filter =
         gizmosql::enterprise::GetMetadataCatalogFilter(*client_session, instr_mgr);
-    std::string upper_sql = boost::to_upper_copy(sql);
-    if (!client_session->catalog_access.empty() && metadata_filter.IsRestricted() &&
-        QueryTouchesRestrictedMetadataSource(upper_sql)) {
-      if (IsRestrictedMetadataQueryTooComplex(upper_sql)) {
-        return Status::Invalid(
-            "Access denied: Complex metadata queries are not supported for "
-            "catalog-restricted tokens.");
+    if (!client_session->catalog_access.empty() && metadata_filter.IsRestricted()) {
+      std::string upper_sql = boost::to_upper_copy(sql);
+      if (IsShowDatabasesQuery(sql)) {
+        effective_sql = BuildRestrictedShowDatabasesSql(metadata_filter);
+      } else if (IsShowAllTablesQuery(sql)) {
+        effective_sql = BuildRestrictedShowAllTablesSql(metadata_filter);
+      } else if (QueryTouchesRestrictedMetadataSource(upper_sql)) {
+        if (IsRestrictedMetadataQueryTooComplex(upper_sql)) {
+          return Status::Invalid(
+              "Access denied: Complex metadata queries are not supported for "
+              "catalog-restricted tokens.");
+        }
+        restricted_metadata_filter = metadata_filter;
       }
-      restricted_metadata_filter = metadata_filter;
     }
   }
 #endif

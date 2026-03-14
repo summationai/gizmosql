@@ -310,6 +310,40 @@ TEST_F(CatalogMetadataRestrictionFixture, UseForbiddenCatalogIsDenied) {
   ASSERT_NE(result.status().ToString().find("Access denied"), std::string::npos);
 }
 
+TEST_F(CatalogMetadataRestrictionFixture, ShowDatabasesShowsOnlyAllowedCatalog) {
+  SKIP_WITHOUT_LICENSE();
+  ASSERT_TRUE(IsServerReady()) << "Server not ready";
+
+  std::string token = CreateRestrictedToken();
+  auto call_options = GetCallOptionsWithToken(token);
+  ASSERT_ARROW_OK_AND_ASSIGN(auto client, CreateClientWithToken(token));
+
+  ASSERT_ARROW_OK_AND_ASSIGN(auto table,
+                             ExecuteToTable(*client, call_options, "SHOW DATABASES"));
+
+  auto catalogs = GetStringColumnValues(table, "database_name");
+  ASSERT_EQ(catalogs.size(), 1);
+  EXPECT_EQ(catalogs[0], kAllowedCatalog);
+}
+
+TEST_F(CatalogMetadataRestrictionFixture, ShowAllTablesShowsOnlyAllowedCatalog) {
+  SKIP_WITHOUT_LICENSE();
+  ASSERT_TRUE(IsServerReady()) << "Server not ready";
+
+  std::string token = CreateRestrictedToken();
+  auto call_options = GetCallOptionsWithToken(token);
+  ASSERT_ARROW_OK_AND_ASSIGN(auto client, CreateClientWithToken(token));
+
+  ASSERT_ARROW_OK_AND_ASSIGN(auto table,
+                             ExecuteToTable(*client, call_options, "SHOW ALL TABLES"));
+
+  auto catalogs = GetStringColumnValues(table, "database");
+  ASSERT_FALSE(catalogs.empty());
+  for (const auto& catalog : catalogs) {
+    EXPECT_EQ(catalog, kAllowedCatalog);
+  }
+}
+
 TEST_F(CatalogMetadataRestrictionFixture, InformationSchemaTablesShowsOnlyAllowedCatalog) {
   SKIP_WITHOUT_LICENSE();
   ASSERT_TRUE(IsServerReady()) << "Server not ready";
