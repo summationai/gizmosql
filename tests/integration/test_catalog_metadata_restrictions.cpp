@@ -25,8 +25,6 @@
 #include <vector>
 
 #include <jwt-cpp/jwt.h>
-#include <picojson.h>
-
 #include "arrow/api.h"
 #include "arrow/flight/sql/client.h"
 #include "arrow/flight/sql/types.h"
