@@ -52,6 +52,7 @@
 #include "session_context.h"
 #include "request_ctx.h"
 #ifdef GIZMOSQL_ENTERPRISE
+#include "enterprise/catalog_permissions/catalog_permissions_handler.h"
 #include "enterprise/instrumentation/instrumentation_manager.h"
 #include "enterprise/instrumentation/instrumentation_records.h"
 #endif
@@ -262,6 +263,37 @@ std::string QuoteIdent(const std::string& name) {
   q += "\"";
   return q;
 }
+
+bool HasSqlLikeWildcard(const std::string& value) {
+  return value.find('%') != std::string::npos || value.find('_') != std::string::npos;
+}
+
+#ifdef GIZMOSQL_ENTERPRISE
+std::shared_ptr<InstrumentationManager> GetInstrumentationManagerForSession(
+    const std::shared_ptr<ClientSession>& client_session) {
+  if (auto server = GetServer(*client_session)) {
+    return server->GetInstrumentationManager();
+  }
+  return nullptr;
+}
+
+arrow::Status EnsureReadableCatalog(
+    const std::shared_ptr<ClientSession>& client_session,
+    const std::string& catalog_name) {
+  return gizmosql::enterprise::EnsureCatalogReadAccess(
+      *client_session, catalog_name, GetInstrumentationManagerForSession(client_session));
+}
+
+std::string BuildMetadataCatalogFilterSqlForSession(
+    const std::shared_ptr<ClientSession>& client_session,
+    const std::string& column_name,
+    duckdb::vector<duckdb::Value>& bind_parameters) {
+  auto filter = gizmosql::enterprise::GetMetadataCatalogFilter(
+      *client_session, GetInstrumentationManagerForSession(client_session));
+  return gizmosql::enterprise::BuildMetadataCatalogFilterSql(
+      filter, column_name, bind_parameters);
+}
+#endif
 
 Result<bool> TableExists(duckdb::Connection& conn,
                          const std::optional<std::string>& catalog_name,
@@ -651,7 +683,8 @@ arrow::Status AppendRecordBatchToDuckDB(
 }
 
 std::string PrepareQueryForGetTables(const sql::GetTables& command,
-                                     duckdb::vector<duckdb::Value>& bind_parameters) {
+                                     duckdb::vector<duckdb::Value>& bind_parameters,
+                                     const std::string& metadata_catalog_filter_sql = "") {
   std::stringstream table_query;
 
   table_query << "SELECT table_catalog as catalog_name, table_schema as db_schema_name, "
@@ -665,6 +698,10 @@ std::string PrepareQueryForGetTables(const sql::GetTables& command,
   } else {
     table_query << "= CURRENT_DATABASE()";
   }
+
+#ifdef GIZMOSQL_ENTERPRISE
+  table_query << metadata_catalog_filter_sql;
+#endif
 
   if (command.db_schema_filter_pattern.has_value()) {
     table_query << " and table_schema LIKE ?";
@@ -1129,12 +1166,17 @@ class DuckDBFlightSqlServer::Impl {
 
   Result<std::unique_ptr<flight::FlightDataStream>> DoGetCatalogs(
       const flight::ServerCallContext& context) {
-    std::string query =
-        "SELECT DISTINCT catalog_name FROM information_schema.schemata ORDER BY "
-        "catalog_name";
-
     ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
-    return DoGetDuckDBQuery(client_session, query, sql::SqlSchema::GetCatalogsSchema(),
+    duckdb::vector<duckdb::Value> bind_parameters;
+    std::stringstream query;
+    query << "SELECT DISTINCT catalog_name FROM information_schema.schemata WHERE 1 = 1";
+#ifdef GIZMOSQL_ENTERPRISE
+    query << BuildMetadataCatalogFilterSqlForSession(client_session, "catalog_name",
+                                                     bind_parameters);
+#endif
+    query << " ORDER BY catalog_name";
+    return DoGetDuckDBQuery(client_session, query.str(), sql::SqlSchema::GetCatalogsSchema(),
+                            bind_parameters,
                             print_queries_, query_timeout_, "DoGetCatalogs", true);
   }
 
@@ -1146,6 +1188,7 @@ class DuckDBFlightSqlServer::Impl {
 
   Result<std::unique_ptr<flight::FlightDataStream>> DoGetDbSchemas(
       const flight::ServerCallContext& context, const sql::GetDbSchemas& command) {
+    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     std::stringstream query;
     duckdb::vector<duckdb::Value> bind_parameters;
     query << "SELECT catalog_name, schema_name AS db_schema_name FROM "
@@ -1153,11 +1196,21 @@ class DuckDBFlightSqlServer::Impl {
 
     query << " AND catalog_name = ";
     if (command.catalog.has_value()) {
+#ifdef GIZMOSQL_ENTERPRISE
+      if (!HasSqlLikeWildcard(command.catalog.value())) {
+        ARROW_RETURN_NOT_OK(EnsureReadableCatalog(client_session, command.catalog.value()));
+      }
+#endif
       query << "?";
       bind_parameters.emplace_back(command.catalog.value());
     } else {
       query << "CURRENT_DATABASE()";
     }
+
+#ifdef GIZMOSQL_ENTERPRISE
+    query << BuildMetadataCatalogFilterSqlForSession(client_session, "catalog_name",
+                                                     bind_parameters);
+#endif
 
     if (command.db_schema_filter_pattern.has_value()) {
       query << " AND schema_name LIKE ?";
@@ -1165,7 +1218,6 @@ class DuckDBFlightSqlServer::Impl {
     }
     query << " ORDER BY catalog_name, db_schema_name";
 
-    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     return DoGetDuckDBQuery(client_session, query.str(),
                             sql::SqlSchema::GetDbSchemasSchema(), bind_parameters,
                             print_queries_, query_timeout_, "DoGetDbSchemas", true);
@@ -1294,11 +1346,23 @@ class DuckDBFlightSqlServer::Impl {
 
   Result<std::unique_ptr<flight::FlightDataStream>> DoGetTables(
       const flight::ServerCallContext& context, const sql::GetTables& command) {
-    duckdb::vector<duckdb::Value> get_tables_bind_parameters;
-    std::string get_tables_query =
-        PrepareQueryForGetTables(command, get_tables_bind_parameters);
-    std::shared_ptr<DuckDBStatement> statement;
     ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
+    duckdb::vector<duckdb::Value> get_tables_bind_parameters;
+#ifdef GIZMOSQL_ENTERPRISE
+    if (command.catalog.has_value() &&
+        !HasSqlLikeWildcard(command.catalog.value())) {
+      ARROW_RETURN_NOT_OK(EnsureReadableCatalog(client_session, command.catalog.value()));
+    }
+    const std::string metadata_catalog_filter_sql =
+        BuildMetadataCatalogFilterSqlForSession(client_session, "table_catalog",
+                                                get_tables_bind_parameters);
+#else
+    const std::string metadata_catalog_filter_sql;
+#endif
+    std::string get_tables_query =
+        PrepareQueryForGetTables(command, get_tables_bind_parameters,
+                                 metadata_catalog_filter_sql);
+    std::shared_ptr<DuckDBStatement> statement;
     ARROW_ASSIGN_OR_RAISE(
         statement,
         DuckDBStatement::Create(client_session, get_tables_query,
@@ -1391,6 +1455,7 @@ class DuckDBFlightSqlServer::Impl {
 
   Result<std::unique_ptr<flight::FlightDataStream>> DoGetPrimaryKeys(
       const flight::ServerCallContext& context, const sql::GetPrimaryKeys& command) {
+    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     std::stringstream table_query;
     duckdb::vector<duckdb::Value> bind_parameters;
 
@@ -1413,10 +1478,17 @@ class DuckDBFlightSqlServer::Impl {
     const sql::TableRef& table_ref = command.table_ref;
     table_query << " AND catalog_name = ";
     if (table_ref.catalog.has_value()) {
+#ifdef GIZMOSQL_ENTERPRISE
+      ARROW_RETURN_NOT_OK(EnsureReadableCatalog(client_session, table_ref.catalog.value()));
+#endif
       table_query << "?";
       bind_parameters.emplace_back(table_ref.catalog.value());
     } else {
       table_query << "CURRENT_DATABASE()";
+#ifdef GIZMOSQL_ENTERPRISE
+      table_query << BuildMetadataCatalogFilterSqlForSession(client_session, "catalog_name",
+                                                             bind_parameters);
+#endif
     }
 
     if (table_ref.db_schema.has_value()) {
@@ -1427,7 +1499,6 @@ class DuckDBFlightSqlServer::Impl {
     table_query << " and table_name LIKE ?";
     bind_parameters.emplace_back(table_ref.table);
 
-    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     return DoGetDuckDBQuery(client_session, table_query.str(),
                             sql::SqlSchema::GetPrimaryKeysSchema(), bind_parameters,
                             print_queries_, query_timeout_, "DoGetPrimaryKeys", true);
@@ -1441,6 +1512,7 @@ class DuckDBFlightSqlServer::Impl {
 
   Result<std::unique_ptr<flight::FlightDataStream>> DoGetImportedKeys(
       const flight::ServerCallContext& context, const sql::GetImportedKeys& command) {
+    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     const sql::TableRef& table_ref = command.table_ref;
     duckdb::vector<duckdb::Value> bind_parameters;
 
@@ -1449,11 +1521,21 @@ class DuckDBFlightSqlServer::Impl {
 
     filter += " AND fk_catalog_name = ";
     if (table_ref.catalog.has_value()) {
+#ifdef GIZMOSQL_ENTERPRISE
+      ARROW_RETURN_NOT_OK(EnsureReadableCatalog(client_session, table_ref.catalog.value()));
+#endif
       filter += "?";
       bind_parameters.emplace_back(table_ref.catalog.value());
     } else {
       filter += "CURRENT_DATABASE()";
     }
+
+#ifdef GIZMOSQL_ENTERPRISE
+    filter += BuildMetadataCatalogFilterSqlForSession(client_session, "fk_catalog_name",
+                                                      bind_parameters);
+    filter += BuildMetadataCatalogFilterSqlForSession(client_session, "pk_catalog_name",
+                                                      bind_parameters);
+#endif
 
     if (table_ref.db_schema.has_value()) {
       filter += " AND fk_schema_name = ?";
@@ -1462,7 +1544,6 @@ class DuckDBFlightSqlServer::Impl {
 
     std::string query = PrepareQueryForGetImportedOrExportedKeys(filter);
 
-    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     return DoGetDuckDBQuery(client_session, query,
                             sql::SqlSchema::GetImportedKeysSchema(), bind_parameters,
                             print_queries_, query_timeout_, "DoGetImportedKeys", true);
@@ -1476,6 +1557,7 @@ class DuckDBFlightSqlServer::Impl {
 
   Result<std::unique_ptr<flight::FlightDataStream>> DoGetExportedKeys(
       const flight::ServerCallContext& context, const sql::GetExportedKeys& command) {
+    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     const sql::TableRef& table_ref = command.table_ref;
     duckdb::vector<duckdb::Value> bind_parameters;
 
@@ -1485,11 +1567,21 @@ class DuckDBFlightSqlServer::Impl {
     filter += " AND pk_catalog_name = ";
 
     if (table_ref.catalog.has_value()) {
+#ifdef GIZMOSQL_ENTERPRISE
+      ARROW_RETURN_NOT_OK(EnsureReadableCatalog(client_session, table_ref.catalog.value()));
+#endif
       filter += "?";
       bind_parameters.emplace_back(table_ref.catalog.value());
     } else {
       filter += "CURRENT_DATABASE()";
     }
+
+#ifdef GIZMOSQL_ENTERPRISE
+    filter += BuildMetadataCatalogFilterSqlForSession(client_session, "pk_catalog_name",
+                                                      bind_parameters);
+    filter += BuildMetadataCatalogFilterSqlForSession(client_session, "fk_catalog_name",
+                                                      bind_parameters);
+#endif
 
     if (table_ref.db_schema.has_value()) {
       filter += " AND pk_schema_name = ?";
@@ -1497,7 +1589,6 @@ class DuckDBFlightSqlServer::Impl {
     }
     std::string query = PrepareQueryForGetImportedOrExportedKeys(filter);
 
-    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     return DoGetDuckDBQuery(client_session, query,
                             sql::SqlSchema::GetExportedKeysSchema(), bind_parameters,
                             print_queries_, query_timeout_, "DoGetExportedKeys", true);
@@ -1511,6 +1602,7 @@ class DuckDBFlightSqlServer::Impl {
 
   Result<std::unique_ptr<flight::FlightDataStream>> DoGetCrossReference(
       const flight::ServerCallContext& context, const sql::GetCrossReference& command) {
+    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     const sql::TableRef& pk_table_ref = command.pk_table_ref;
     duckdb::vector<duckdb::Value> bind_parameters;
 
@@ -1519,6 +1611,9 @@ class DuckDBFlightSqlServer::Impl {
 
     filter += " AND pk_catalog_name = ";
     if (pk_table_ref.catalog.has_value()) {
+#ifdef GIZMOSQL_ENTERPRISE
+      ARROW_RETURN_NOT_OK(EnsureReadableCatalog(client_session, pk_table_ref.catalog.value()));
+#endif
       filter += "?";
       bind_parameters.emplace_back(pk_table_ref.catalog.value());
     } else {
@@ -1536,11 +1631,21 @@ class DuckDBFlightSqlServer::Impl {
 
     filter += " AND fk_catalog_name = ";
     if (fk_table_ref.catalog.has_value()) {
+#ifdef GIZMOSQL_ENTERPRISE
+      ARROW_RETURN_NOT_OK(EnsureReadableCatalog(client_session, fk_table_ref.catalog.value()));
+#endif
       filter += "?";
       bind_parameters.emplace_back(fk_table_ref.catalog.value());
     } else {
       filter += "CURRENT_DATABASE()";
     }
+
+#ifdef GIZMOSQL_ENTERPRISE
+    filter += BuildMetadataCatalogFilterSqlForSession(client_session, "pk_catalog_name",
+                                                      bind_parameters);
+    filter += BuildMetadataCatalogFilterSqlForSession(client_session, "fk_catalog_name",
+                                                      bind_parameters);
+#endif
 
     if (fk_table_ref.db_schema.has_value()) {
       filter += " AND fk_schema_name = ?";
@@ -1548,7 +1653,6 @@ class DuckDBFlightSqlServer::Impl {
     }
     std::string query = PrepareQueryForGetImportedOrExportedKeys(filter);
 
-    ARROW_ASSIGN_OR_RAISE(auto client_session, GetClientSession(context));
     return DoGetDuckDBQuery(client_session, query,
                             sql::SqlSchema::GetCrossReferenceSchema(), bind_parameters,
                             print_queries_, query_timeout_, "DoGetCrossReference", true);
@@ -1813,6 +1917,11 @@ class DuckDBFlightSqlServer::Impl {
         std::string sanitized =
             boost::algorithm::erase_all_copy(std::get<std::string>(value), "\"");
         std::string quoted_identifier = "\"" + sanitized + "\"";
+#ifdef GIZMOSQL_ENTERPRISE
+        if (name == "catalog") {
+          ARROW_RETURN_NOT_OK(EnsureReadableCatalog(client_session, sanitized));
+        }
+#endif
         ARROW_RETURN_NOT_OK(ExecuteSql(client_session, "USE " + quoted_identifier));
       } else {
         res.errors.emplace(name, flight::SetSessionOptionsResult::Error{

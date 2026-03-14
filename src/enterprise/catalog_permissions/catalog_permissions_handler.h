@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <arrow/status.h>
@@ -22,6 +23,20 @@ class InstrumentationManager;
 }
 
 namespace gizmosql::enterprise {
+
+enum class MetadataCatalogFilterMode {
+  kAllowAll = 0,
+  kAllowOnly = 1,
+  kAllowAllExcept = 2,
+};
+
+struct MetadataCatalogFilter {
+  MetadataCatalogFilterMode mode = MetadataCatalogFilterMode::kAllowAll;
+  std::vector<std::string> catalogs;
+
+  bool IsRestricted() const;
+  bool Allows(const std::string& catalog_name) const;
+};
 
 /// Get the catalog access level for a given catalog name.
 /// This evaluates the catalog_access rules from the session's JWT token.
@@ -53,6 +68,26 @@ bool HasReadAccess(const ClientSession& client_session, const std::string& catal
 /// @return true if write access is granted
 bool HasWriteAccess(const ClientSession& client_session, const std::string& catalog_name,
                     const std::shared_ptr<gizmosql::ddb::InstrumentationManager>& instrumentation_manager = nullptr);
+
+/// Build a metadata-visibility filter from the session's catalog rules.
+/// This is used to scope catalog/schema/table metadata enumeration for
+/// catalog-restricted tokens.
+MetadataCatalogFilter GetMetadataCatalogFilter(
+    const ClientSession& client_session,
+    const std::shared_ptr<gizmosql::ddb::InstrumentationManager>& instrumentation_manager = nullptr);
+
+/// Build a SQL predicate fragment for a metadata catalog column.
+/// Returns an empty string if no filtering is required.
+std::string BuildMetadataCatalogFilterSql(
+    const MetadataCatalogFilter& filter,
+    const std::string& column_name,
+    duckdb::vector<duckdb::Value>& bind_parameters);
+
+/// Return Invalid when the session cannot read the given catalog.
+arrow::Status EnsureCatalogReadAccess(
+    const ClientSession& client_session,
+    const std::string& catalog_name,
+    const std::shared_ptr<gizmosql::ddb::InstrumentationManager>& instrumentation_manager = nullptr);
 
 /// Check catalog-level write access for all databases a statement will modify.
 /// This is an enterprise feature that requires a valid license with catalog_permissions.

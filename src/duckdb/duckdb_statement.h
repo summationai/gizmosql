@@ -30,6 +30,9 @@
 #include "session_context.h"
 #include <chrono>
 #include <arrow/record_batch.h>
+#ifdef GIZMOSQL_ENTERPRISE
+#include "enterprise/catalog_permissions/catalog_permissions_handler.h"
+#endif
 
 using Clock = std::chrono::steady_clock;
 
@@ -148,5 +151,15 @@ class DuckDBStatement {
   arrow::Result<int32_t> GetQueryTimeout() const;
 
   arrow::Result<arrow::util::ArrowLogLevel> GetLogLevel() const;
+
+#ifdef GIZMOSQL_ENTERPRISE
+  arrow::Status ValidateRestrictedMetadataSchema(
+      const std::shared_ptr<arrow::Schema>& schema) const;
+  arrow::Result<std::shared_ptr<arrow::RecordBatch>> FilterRestrictedMetadataBatch(
+      const std::shared_ptr<arrow::RecordBatch>& batch) const;
+
+  std::optional<gizmosql::enterprise::MetadataCatalogFilter> metadata_catalog_filter_;
+  bool restrict_metadata_results_ = false;
+#endif
 };
 }  // namespace gizmosql::ddb
