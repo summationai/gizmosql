@@ -145,6 +145,76 @@ bool IsDetachInstrumentationDb(const std::string& sql, const std::string& instru
   return false;
 }
 
+std::string UnquoteIdentifier(const std::string& identifier) {
+  if (identifier.size() >= 2 && identifier.front() == '"' && identifier.back() == '"') {
+    std::string unquoted = identifier.substr(1, identifier.size() - 2);
+    boost::replace_all(unquoted, "\"\"", "\"");
+    return unquoted;
+  }
+  return identifier;
+}
+
+std::optional<std::string> TryExtractUseCatalogName(const std::string& sql) {
+  static const std::regex use_pattern(
+      R"(^\s*USE\s+((?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*))(?:\s*\.\s*((?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*)))?\s*;?\s*$)",
+      std::regex_constants::icase);
+
+  std::smatch match;
+  if (!std::regex_match(sql, match, use_pattern)) {
+    return std::nullopt;
+  }
+
+  const std::string first_identifier = UnquoteIdentifier(match[1].str());
+  if (match[2].matched) {
+    return first_identifier;
+  }
+
+  return first_identifier;
+}
+
+bool CatalogExistsOnConnection(const std::shared_ptr<duckdb::Connection>& connection,
+                               const std::string& catalog_name) {
+  auto stmt = connection->Prepare(
+      "SELECT 1 FROM information_schema.schemata WHERE catalog_name = ? LIMIT 1");
+  if (!stmt || !stmt->success) {
+    return false;
+  }
+
+  duckdb::vector<duckdb::Value> bind_parameters;
+  bind_parameters.emplace_back(catalog_name);
+  auto result = stmt->Execute(bind_parameters);
+  if (!result || result->HasError()) {
+    return false;
+  }
+
+  auto row = result->Fetch();
+  return row != nullptr && row->size() > 0;
+}
+
+bool QueryTouchesRestrictedMetadataSource(const std::string& upper_sql) {
+  return upper_sql.find("INFORMATION_SCHEMA.TABLES") != std::string::npos ||
+         upper_sql.find("INFORMATION_SCHEMA.SCHEMATA") != std::string::npos ||
+         upper_sql.find("INFORMATION_SCHEMA.COLUMNS") != std::string::npos ||
+         upper_sql.find("DUCKDB_CONSTRAINTS()") != std::string::npos;
+}
+
+bool IsRestrictedMetadataQueryTooComplex(const std::string& upper_sql) {
+  static const std::vector<std::string> forbidden_tokens = {
+      " JOIN ",    " GROUP BY ", " HAVING ",   " OVER(",
+      " OVER (",   " UNION ",    " EXCEPT ",   " INTERSECT ",
+      " COUNT(",   " SUM(",      " AVG(",      " MIN(",
+      " MAX(",     " STRING_AGG(", " ARRAY_AGG(",
+  };
+
+  for (const auto& token : forbidden_tokens) {
+    if (upper_sql.find(token) != std::string::npos) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 #ifndef GIZMOSQL_ENTERPRISE
 // Core edition: local implementation for detection only
 bool IsKillSessionCommand(const std::string& sql, std::string& target_session_id) {
@@ -659,27 +729,50 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
         {"sql", logged_sql});
   }
 
+#ifdef GIZMOSQL_ENTERPRISE
+  std::shared_ptr<InstrumentationManager> instr_mgr;
+  if (auto server = GetServer(*client_session)) {
+    instr_mgr = server->GetInstrumentationManager();
+  }
+
+  std::optional<gizmosql::enterprise::MetadataCatalogFilter> restricted_metadata_filter;
+  if (!is_internal) {
+    if (auto use_catalog_name = TryExtractUseCatalogName(sql)) {
+      if (CatalogExistsOnConnection(client_session->connection, *use_catalog_name)) {
+        ARROW_RETURN_NOT_OK(gizmosql::enterprise::EnsureCatalogReadAccess(
+            *client_session, *use_catalog_name, instr_mgr));
+      }
+    }
+
+    auto metadata_filter =
+        gizmosql::enterprise::GetMetadataCatalogFilter(*client_session, instr_mgr);
+    std::string upper_sql = boost::to_upper_copy(sql);
+    if (!client_session->catalog_access.empty() && metadata_filter.IsRestricted() &&
+        QueryTouchesRestrictedMetadataSource(upper_sql)) {
+      if (IsRestrictedMetadataQueryTooComplex(upper_sql)) {
+        return Status::Invalid(
+            "Access denied: Complex metadata queries are not supported for "
+            "catalog-restricted tokens.");
+      }
+      restricted_metadata_filter = metadata_filter;
+    }
+  }
+#endif
+
   // Prevent DETACH of instrumentation database (only relevant when enterprise is enabled)
 #ifdef GIZMOSQL_ENTERPRISE
   {
     // Get the instrumentation catalog name to also protect external catalogs (e.g., DuckLake)
-    std::string instr_catalog;
-    if (auto server = GetServer(*client_session)) {
-      if (auto mgr = server->GetInstrumentationManager()) {
-        instr_catalog = mgr->GetCatalog();
-      }
-    }
+    std::string instr_catalog = instr_mgr ? instr_mgr->GetCatalog() : "";
     if (IsDetachInstrumentationDb(sql, instr_catalog)) {
       GIZMOSQL_LOGKV_SESSION(WARNING, client_session, "Client attempted to DETACH instrumentation database",
                      {"kind", "sql"}, {"status", "rejected"},
                      {"statement_id", handle}, {"sql", logged_sql});
       std::string error_msg = "Cannot DETACH the instrumentation database";
       // Record the rejected DETACH attempt
-      if (auto server = GetServer(*client_session)) {
-        if (auto mgr = server->GetInstrumentationManager()) {
-          StatementInstrumentation(mgr, handle, client_session->session_id, logged_sql,
-                                   flight_method, is_internal, error_msg);
-        }
+      if (instr_mgr) {
+        StatementInstrumentation(instr_mgr, handle, client_session->session_id, logged_sql,
+                                 flight_method, is_internal, error_msg);
       }
       return Status::Invalid(error_msg);
     }
@@ -691,10 +784,6 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
 #ifdef GIZMOSQL_ENTERPRISE
   if (gizmosql::enterprise::IsKillSessionCommand(sql, target_session_id)) {
     auto server = GetServer(*client_session);
-    std::shared_ptr<InstrumentationManager> instr_mgr;
-    if (server) {
-      instr_mgr = server->GetInstrumentationManager();
-    }
 
     auto kill_status = gizmosql::enterprise::HandleKillSession(
         client_session, target_session_id, server.get(), instr_mgr,
@@ -771,11 +860,6 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
 #ifdef GIZMOSQL_ENTERPRISE
     // Check catalog-level access permissions (Enterprise feature)
     // These checks enforce per-catalog read/write permissions from JWT token claims
-    std::shared_ptr<InstrumentationManager> instr_mgr;
-    if (auto server = GetServer(*client_session)) {
-      instr_mgr = server->GetInstrumentationManager();
-    }
-
     // Check write access for all catalogs the statement will modify
     auto write_status = gizmosql::enterprise::CheckCatalogWriteAccess(
         client_session, stmt->data->properties.modified_databases,
@@ -817,6 +901,13 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
     // Check if this is the multiple statements error that can be resolved with direct execution
     if (error_message.find("Cannot prepare multiple statements at once") !=
         std::string::npos) {
+#ifdef GIZMOSQL_ENTERPRISE
+      if (restricted_metadata_filter.has_value()) {
+        return Status::Invalid(
+            "Access denied: Catalog-restricted metadata queries do not support "
+            "multi-statement execution.");
+      }
+#endif
       // Fallback to direct query execution for statements like PIVOT that get rewritten to multiple statements
       if (log_queries) {
         GIZMOSQL_LOGKV_SESSION_DYNAMIC_AT(
@@ -832,12 +923,14 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
           client_session, handle, sql, log_level, log_queries, override_schema));
 
 #ifdef GIZMOSQL_ENTERPRISE
+      if (restricted_metadata_filter.has_value()) {
+        result->restrict_metadata_results_ = true;
+        result->metadata_catalog_filter_ = *restricted_metadata_filter;
+      }
       // Create statement instrumentation for direct execution
-      if (auto server = GetServer(*client_session)) {
-        if (auto mgr = server->GetInstrumentationManager()) {
-          result->instrumentation_ = std::make_unique<StatementInstrumentation>(
-              mgr, handle, client_session->session_id, logged_sql, flight_method, is_internal);
-        }
+      if (instr_mgr) {
+        result->instrumentation_ = std::make_unique<StatementInstrumentation>(
+            instr_mgr, handle, client_session->session_id, logged_sql, flight_method, is_internal);
       }
 #endif
 
@@ -874,12 +967,14 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
       client_session, handle, stmt, log_level, log_queries, override_schema));
 
 #ifdef GIZMOSQL_ENTERPRISE
+  if (restricted_metadata_filter.has_value()) {
+    result->restrict_metadata_results_ = true;
+    result->metadata_catalog_filter_ = *restricted_metadata_filter;
+  }
   // Create statement instrumentation for prepared statement
-  if (auto server = GetServer(*client_session)) {
-    if (auto mgr = server->GetInstrumentationManager()) {
-      result->instrumentation_ = std::make_unique<StatementInstrumentation>(
-          mgr, handle, client_session->session_id, logged_sql, flight_method, is_internal);
-    }
+  if (instr_mgr) {
+    result->instrumentation_ = std::make_unique<StatementInstrumentation>(
+        instr_mgr, handle, client_session->session_id, logged_sql, flight_method, is_internal);
   }
 #endif
 
@@ -1357,6 +1452,9 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> DuckDBStatement::FetchResult(
     duckdb::ArrowConverter::ToArrowArray(*data_chunk, &res_arr, res_options,
                                          extension_type_cast);
     ARROW_ASSIGN_OR_RAISE(record_batch, arrow::ImportRecordBatch(&res_arr, &res_schema));
+#ifdef GIZMOSQL_ENTERPRISE
+    ARROW_ASSIGN_OR_RAISE(record_batch, FilterRestrictedMetadataBatch(record_batch));
+#endif
 
     GIZMOSQL_LOGKV_SESSION(DEBUG, client_session_, "Client RecordBatch Fetch",
                    {"kind", "fetch"}, {"status", "success"},
@@ -1450,6 +1548,122 @@ arrow::Result<std::shared_ptr<arrow::Schema>> DuckDBStatement::GetSchema() {
   return cached_schema_;
 }
 
+#ifdef GIZMOSQL_ENTERPRISE
+arrow::Status DuckDBStatement::ValidateRestrictedMetadataSchema(
+    const std::shared_ptr<arrow::Schema>& schema) const {
+  if (!restrict_metadata_results_ || !metadata_catalog_filter_.has_value() || !schema) {
+    return arrow::Status::OK();
+  }
+
+  static const std::vector<std::string> kCatalogColumns = {
+      "catalog_name", "table_catalog", "database_name", "pk_catalog_name", "fk_catalog_name"};
+
+  for (const auto& column_name : kCatalogColumns) {
+    if (schema->GetFieldIndex(column_name) != -1) {
+      return arrow::Status::OK();
+    }
+  }
+
+  return arrow::Status::Invalid(
+      "Access denied: Metadata queries for catalog-restricted tokens must include "
+      "catalog columns in the result.");
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>> DuckDBStatement::FilterRestrictedMetadataBatch(
+    const std::shared_ptr<arrow::RecordBatch>& batch) const {
+  if (!restrict_metadata_results_ || !metadata_catalog_filter_.has_value() || !batch) {
+    return batch;
+  }
+
+  static const std::vector<std::string> kCatalogColumns = {
+      "catalog_name", "table_catalog", "database_name", "pk_catalog_name", "fk_catalog_name"};
+
+  std::vector<int> catalog_column_indices;
+  for (const auto& column_name : kCatalogColumns) {
+    int column_index = batch->schema()->GetFieldIndex(column_name);
+    if (column_index != -1) {
+      catalog_column_indices.push_back(column_index);
+    }
+  }
+
+  if (catalog_column_indices.empty()) {
+    return arrow::Status::Invalid(
+        "Access denied: Metadata queries for catalog-restricted tokens must include "
+        "catalog columns in the result.");
+  }
+
+  std::vector<bool> keep_rows(batch->num_rows(), true);
+  int64_t kept_rows = 0;
+
+  for (int64_t row = 0; row < batch->num_rows(); ++row) {
+    bool keep_row = true;
+    for (int column_index : catalog_column_indices) {
+      ARROW_ASSIGN_OR_RAISE(auto scalar, batch->column(column_index)->GetScalar(row));
+      if (!scalar->is_valid) {
+        keep_row = false;
+        break;
+      }
+
+      std::string catalog_name;
+      if (auto string_scalar = std::dynamic_pointer_cast<arrow::StringScalar>(scalar)) {
+        catalog_name = std::string(string_scalar->view());
+      } else if (auto large_string_scalar =
+                     std::dynamic_pointer_cast<arrow::LargeStringScalar>(scalar)) {
+        catalog_name = std::string(large_string_scalar->view());
+      } else {
+        return arrow::Status::Invalid(
+            "Access denied: Metadata catalog columns must be strings for "
+            "catalog-restricted tokens.");
+      }
+
+      if (!metadata_catalog_filter_->Allows(catalog_name)) {
+        keep_row = false;
+        break;
+      }
+    }
+
+    keep_rows[row] = keep_row;
+    if (keep_row) {
+      kept_rows++;
+    }
+  }
+
+  if (kept_rows == batch->num_rows()) {
+    return batch;
+  }
+
+  std::vector<std::unique_ptr<arrow::ArrayBuilder>> builders;
+  builders.reserve(batch->num_columns());
+  for (const auto& field : batch->schema()->fields()) {
+    std::unique_ptr<arrow::ArrayBuilder> builder;
+    ARROW_RETURN_NOT_OK(arrow::MakeBuilder(arrow::default_memory_pool(), field->type(),
+                                           &builder));
+    builders.push_back(std::move(builder));
+  }
+
+  for (int64_t row = 0; row < batch->num_rows(); ++row) {
+    if (!keep_rows[row]) {
+      continue;
+    }
+
+    for (int column_index = 0; column_index < batch->num_columns(); ++column_index) {
+      ARROW_ASSIGN_OR_RAISE(auto scalar, batch->column(column_index)->GetScalar(row));
+      ARROW_RETURN_NOT_OK(builders[column_index]->AppendScalar(*scalar));
+    }
+  }
+
+  std::vector<std::shared_ptr<arrow::Array>> arrays;
+  arrays.reserve(batch->num_columns());
+  for (auto& builder : builders) {
+    std::shared_ptr<arrow::Array> array;
+    ARROW_RETURN_NOT_OK(builder->Finish(&array));
+    arrays.push_back(std::move(array));
+  }
+
+  return arrow::RecordBatch::Make(batch->schema(), kept_rows, arrays);
+}
+#endif
+
 long DuckDBStatement::GetLastExecutionDurationMs() const {
   return std::chrono::duration_cast<std::chrono::milliseconds>(end_time_ - start_time_)
       .count();
@@ -1483,7 +1697,10 @@ arrow::Result<std::shared_ptr<arrow::Schema>> DuckDBStatement::ComputeSchema() {
     duckdb::ArrowConverter::ToArrowSchema(&arrow_schema, query_result_->types,
                                           query_result_->names, client_properties);
 
-    auto return_value = arrow::ImportSchema(&arrow_schema);
+    ARROW_ASSIGN_OR_RAISE(auto return_value, arrow::ImportSchema(&arrow_schema));
+#ifdef GIZMOSQL_ENTERPRISE
+    ARROW_RETURN_NOT_OK(ValidateRestrictedMetadataSchema(return_value));
+#endif
     status = "success";
     return return_value;
   }
@@ -1497,7 +1714,10 @@ arrow::Result<std::shared_ptr<arrow::Schema>> DuckDBStatement::ComputeSchema() {
   ArrowSchema arrow_schema;
   duckdb::ArrowConverter::ToArrowSchema(&arrow_schema, types, names, client_properties);
 
-  auto return_value = arrow::ImportSchema(&arrow_schema);
+  ARROW_ASSIGN_OR_RAISE(auto return_value, arrow::ImportSchema(&arrow_schema));
+#ifdef GIZMOSQL_ENTERPRISE
+  ARROW_RETURN_NOT_OK(ValidateRestrictedMetadataSchema(return_value));
+#endif
   status = "success";
   return return_value;
 }
