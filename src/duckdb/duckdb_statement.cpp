@@ -267,6 +267,25 @@ bool QueryTouchesRestrictedMetadataSource(const std::string& upper_sql) {
          upper_sql.find("DUCKDB_CONSTRAINTS()") != std::string::npos;
 }
 
+std::optional<std::string> GetDeniedRestrictedMetadataFunction(
+    const std::string& upper_sql) {
+  static const std::vector<std::string> kDeniedFunctions = {
+      "DUCKDB_DATABASES()",
+      "DUCKDB_TABLES()",
+      "DUCKDB_COLUMNS()",
+      "DUCKDB_SCHEMAS()",
+      "DUCKDB_VIEWS()",
+  };
+
+  for (const auto& function_name : kDeniedFunctions) {
+    if (upper_sql.find(function_name) != std::string::npos) {
+      return boost::to_lower_copy(function_name);
+    }
+  }
+
+  return std::nullopt;
+}
+
 bool IsRestrictedMetadataQueryTooComplex(const std::string& upper_sql) {
   static const std::vector<std::string> forbidden_tokens = {
       " JOIN ",    " GROUP BY ", " HAVING ",   " OVER(",
@@ -823,6 +842,11 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
         return Status::Invalid(
             "Access denied: SHOW ALL TABLES is not allowed for catalog-restricted "
             "tokens. Use SHOW TABLES after selecting an allowed catalog.");
+      } else if (auto denied_function =
+                     GetDeniedRestrictedMetadataFunction(upper_sql)) {
+        return Status::Invalid(
+            "Access denied: " + *denied_function +
+            " is not allowed for catalog-restricted tokens.");
       } else if (QueryTouchesRestrictedMetadataSource(upper_sql)) {
         if (IsRestrictedMetadataQueryTooComplex(upper_sql)) {
           return Status::Invalid(

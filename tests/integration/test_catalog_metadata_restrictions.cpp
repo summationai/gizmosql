@@ -340,6 +340,39 @@ TEST_F(CatalogMetadataRestrictionFixture, ShowAllTablesIsDenied) {
             std::string::npos);
 }
 
+TEST_F(CatalogMetadataRestrictionFixture, DuckDBMetadataFunctionsAreDenied) {
+  SKIP_WITHOUT_LICENSE();
+  ASSERT_TRUE(IsServerReady()) << "Server not ready";
+
+  std::string token = CreateRestrictedToken();
+  auto call_options = GetCallOptionsWithToken(token);
+  ASSERT_ARROW_OK_AND_ASSIGN(auto client, CreateClientWithToken(token));
+
+  const std::vector<std::pair<std::string, std::string>> queries = {
+      {"duckdb_databases()",
+       "SELECT database_name FROM duckdb_databases() ORDER BY database_name"},
+      {"duckdb_tables()",
+       "SELECT database_name, schema_name, table_name "
+       "FROM duckdb_tables() ORDER BY database_name, table_name"},
+      {"duckdb_columns()",
+       "SELECT database_name, schema_name, table_name, column_name "
+       "FROM duckdb_columns() ORDER BY database_name, table_name, column_name"},
+      {"duckdb_schemas()",
+       "SELECT database_name, schema_name FROM duckdb_schemas() "
+       "ORDER BY database_name, schema_name"},
+      {"duckdb_views()",
+       "SELECT database_name, schema_name, view_name "
+       "FROM duckdb_views() ORDER BY database_name, view_name"},
+  };
+
+  for (const auto& [function_name, query] : queries) {
+    auto result = client->Execute(call_options, query);
+    ASSERT_FALSE(result.ok()) << "Expected " << function_name << " to be denied";
+    ASSERT_NE(result.status().ToString().find(function_name), std::string::npos)
+        << result.status().ToString();
+  }
+}
+
 TEST_F(CatalogMetadataRestrictionFixture, InformationSchemaTablesShowsOnlyAllowedCatalog) {
   SKIP_WITHOUT_LICENSE();
   ASSERT_TRUE(IsServerReady()) << "Server not ready";
