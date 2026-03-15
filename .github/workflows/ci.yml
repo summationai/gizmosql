@@ -66,6 +66,92 @@ jobs:
             CMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
             GIZMOSQL_ENTERPRISE=ON
             WITH_OPENTELEMETRY=ON
+
+      - name: Start PostgreSQL test services
+        run: |
+          docker run -d --name postgres \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=testpassword \
+            -e POSTGRES_DB=ducklake_catalog \
+            -p 5432:5432 \
+            --health-cmd "pg_isready -U postgres" \
+            --health-interval 10s \
+            --health-timeout 5s \
+            --health-retries 10 \
+            postgres:16-alpine
+
+          docker run -d --name postgres-instrumentation \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=testpassword \
+            -e POSTGRES_DB=instrumentation_catalog \
+            -p 5433:5432 \
+            --health-cmd "pg_isready -U postgres" \
+            --health-interval 10s \
+            --health-timeout 5s \
+            --health-retries 10 \
+            postgres:16-alpine
+
+          for container in postgres postgres-instrumentation; do
+            for i in $(seq 1 30); do
+              STATUS=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")
+              if [ "$STATUS" = "healthy" ]; then
+                break
+              fi
+              echo "Waiting for $container to be healthy... (attempt $i)"
+              sleep 2
+            done
+            STATUS=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")
+            if [ "$STATUS" != "healthy" ]; then
+              echo "$container failed to become healthy"
+              docker logs "$container"
+              exit 1
+            fi
+          done
+
+      - name: Start MinIO and setup bucket
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data --console-address ":9001"
+
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+            MC_ARCH="arm64"
+          else
+            MC_ARCH="amd64"
+          fi
+
+          curl -sL "https://dl.min.io/client/mc/release/linux-${MC_ARCH}/mc" -o /tmp/mc
+          chmod +x /tmp/mc
+
+          for i in $(seq 1 30); do
+            /tmp/mc alias set myminio http://localhost:9000 minioadmin minioadmin && break
+            echo "Waiting for MinIO to be ready... (attempt $i)"
+            sleep 2
+          done
+
+          /tmp/mc mb --ignore-existing myminio/instrumentation
+
+      - name: Run Tests (Core Edition - No License)
+        run: |
+          ./build/tests/gizmosql_integration_tests
+
+      - name: Setup Enterprise License
+        env:
+          GIZMOSQL_LICENSE_KEY: ${{ secrets.GIZMOSQL_LICENSE_KEY }}
+        if: env.GIZMOSQL_LICENSE_KEY != ''
+        run: |
+          echo "$GIZMOSQL_LICENSE_KEY" > /tmp/gizmosql_license.jwt
+          echo "GIZMOSQL_LICENSE_KEY_FILE=/tmp/gizmosql_license.jwt" >> $GITHUB_ENV
+
+      - name: Run Tests (Enterprise Edition - With License)
+        env:
+          GIZMOSQL_LICENSE_KEY: ${{ secrets.GIZMOSQL_LICENSE_KEY }}
+        if: env.GIZMOSQL_LICENSE_KEY != ''
+        run: |
+          ./build/tests/gizmosql_integration_tests
       
       - name: Zip artifacts
         run: |
