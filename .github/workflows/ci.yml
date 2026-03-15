@@ -48,7 +48,10 @@ jobs:
           fi
 
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev
+          sudo apt-get install -y \
+            libcurl4-openssl-dev \
+            postgresql \
+            postgresql-client
 
           docker buildx create --use --name mybuilder --driver docker-container
           aws --version
@@ -69,68 +72,61 @@ jobs:
 
       - name: Start PostgreSQL test services
         run: |
-          docker run -d --name postgres \
-            -e POSTGRES_USER=postgres \
-            -e POSTGRES_PASSWORD=testpassword \
-            -e POSTGRES_DB=ducklake_catalog \
-            -p 5432:5432 \
-            --health-cmd "pg_isready -U postgres" \
-            --health-interval 10s \
-            --health-timeout 5s \
-            --health-retries 10 \
-            postgres:16-alpine
+          PG_VERSION=$(ls /etc/postgresql | sort -V | tail -n1)
 
-          docker run -d --name postgres-instrumentation \
-            -e POSTGRES_USER=postgres \
-            -e POSTGRES_PASSWORD=testpassword \
-            -e POSTGRES_DB=instrumentation_catalog \
-            -p 5433:5432 \
-            --health-cmd "pg_isready -U postgres" \
-            --health-interval 10s \
-            --health-timeout 5s \
-            --health-retries 10 \
-            postgres:16-alpine
+          sudo pg_ctlcluster "$PG_VERSION" main start
 
-          for container in postgres postgres-instrumentation; do
+          if ! pg_lsclusters | awk '{print $1":"$2}' | grep -q "^${PG_VERSION}:instrumentation$"; then
+            sudo pg_createcluster "$PG_VERSION" instrumentation --start -p 5433 -- --auth-local=peer --auth-host=scram-sha-256
+          else
+            sudo pg_ctlcluster "$PG_VERSION" instrumentation start
+          fi
+
+          for port in 5432 5433; do
             for i in $(seq 1 30); do
-              STATUS=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")
-              if [ "$STATUS" = "healthy" ]; then
-                break
-              fi
-              echo "Waiting for $container to be healthy... (attempt $i)"
+              pg_isready -h localhost -p "$port" -U postgres && break
+              echo "Waiting for PostgreSQL on port $port... (attempt $i)"
               sleep 2
             done
-            STATUS=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")
-            if [ "$STATUS" != "healthy" ]; then
-              echo "$container failed to become healthy"
-              docker logs "$container"
-              exit 1
-            fi
+            pg_isready -h localhost -p "$port" -U postgres
           done
+
+          sudo -u postgres psql -p 5432 -c "ALTER USER postgres PASSWORD 'testpassword';"
+          if ! sudo -u postgres psql -p 5432 -tAc "SELECT 1 FROM pg_database WHERE datname = 'ducklake_catalog'" | grep -q 1; then
+            sudo -u postgres createdb -p 5432 ducklake_catalog
+          fi
+
+          sudo -u postgres psql -p 5433 -c "ALTER USER postgres PASSWORD 'testpassword';"
+          if ! sudo -u postgres psql -p 5433 -tAc "SELECT 1 FROM pg_database WHERE datname = 'instrumentation_catalog'" | grep -q 1; then
+            sudo -u postgres createdb -p 5433 instrumentation_catalog
+          fi
 
       - name: Start MinIO and setup bucket
         run: |
-          docker run -d --name minio \
-            -p 9000:9000 -p 9001:9001 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data --console-address ":9001"
-
           ARCH=$(uname -m)
           if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-            MC_ARCH="arm64"
+            BIN_ARCH="arm64"
           else
-            MC_ARCH="amd64"
+            BIN_ARCH="amd64"
           fi
 
-          curl -sL "https://dl.min.io/client/mc/release/linux-${MC_ARCH}/mc" -o /tmp/mc
+          curl -sL "https://dl.min.io/server/minio/release/linux-${BIN_ARCH}/minio" -o /tmp/minio
+          curl -sL "https://dl.min.io/client/mc/release/linux-${BIN_ARCH}/mc" -o /tmp/mc
+          chmod +x /tmp/minio
           chmod +x /tmp/mc
+
+          mkdir -p /tmp/minio-data
+          nohup env MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+            /tmp/minio server /tmp/minio-data --console-address ":9001" \
+            >/tmp/minio.log 2>&1 &
 
           for i in $(seq 1 30); do
             /tmp/mc alias set myminio http://localhost:9000 minioadmin minioadmin && break
             echo "Waiting for MinIO to be ready... (attempt $i)"
             sleep 2
           done
+
+          /tmp/mc alias set myminio http://localhost:9000 minioadmin minioadmin
 
           /tmp/mc mb --ignore-existing myminio/instrumentation
 
