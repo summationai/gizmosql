@@ -39,6 +39,9 @@ jobs:
 
       - name: Install build requirements
         run: |
+          export DEBIAN_FRONTEND=noninteractive
+          export APT_LISTCHANGES_FRONTEND=none
+
           # If running on arm64, start docker daemon
           if [ "${{ matrix.platform }}" = "arm64" ]; then
             sudo mkdir -p /sys/fs/cgroup/docker
@@ -47,8 +50,8 @@ jobs:
             docker --version
           fi
 
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo -E apt-get update
+          sudo -E apt-get install -y -o Dpkg::Use-Pty=0 \
             libcurl4-openssl-dev \
             postgresql \
             postgresql-client
