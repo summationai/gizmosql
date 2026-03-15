@@ -52,6 +52,7 @@
 #include "session_context.h"
 #include "request_ctx.h"
 #ifdef GIZMOSQL_ENTERPRISE
+#include "enterprise/catalog_permissions/catalog_permissions_handler.h"
 #include "enterprise/instrumentation/instrumentation_manager.h"
 #include "enterprise/instrumentation/instrumentation_records.h"
 #endif
@@ -1835,7 +1836,7 @@ class DuckDBFlightSqlServer::Impl {
             boost::algorithm::erase_all_copy(std::get<std::string>(value), "\"");
 #ifdef GIZMOSQL_ENTERPRISE
         if (name == "catalog" &&
-            CatalogExistsOnConnection(client_session->connection->Get(), sanitized)) {
+            CatalogExistsOnConnection(*client_session->connection, sanitized)) {
           std::shared_ptr<InstrumentationManager> instr_mgr;
           if (auto server = GetServer(*client_session)) {
             instr_mgr = server->GetInstrumentationManager();

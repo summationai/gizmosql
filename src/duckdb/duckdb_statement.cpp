@@ -706,7 +706,7 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
 
   if (!is_internal) {
     if (auto use_catalog_name = TryExtractUseCatalogName(sql)) {
-      if (CatalogExistsOnConnection(client_session->connection->Get(), *use_catalog_name)) {
+      if (CatalogExistsOnConnection(*client_session->connection, *use_catalog_name)) {
         ARROW_RETURN_NOT_OK(gizmosql::enterprise::EnsureCatalogReadAccess(
             client_session, *use_catalog_name, instr_mgr, handle, logged_sql,
             flight_method, is_internal));
@@ -718,7 +718,7 @@ arrow::Result<std::shared_ptr<DuckDBStatement>> DuckDBStatement::Create(
   if (!client_session->catalog_access.empty() &&
       enterprise::EnterpriseFeatures::Instance().IsCatalogPermissionsAvailable()) {
     auto allowed = enterprise::GetAllowedCatalogs(
-        *client_session, client_session->connection->Get(), instr_mgr);
+        *client_session, *client_session->connection, instr_mgr);
     if (!allowed.empty()) {
       auto filter_in = enterprise::BuildCatalogFilterIN(allowed);
       std::string rewritten;
