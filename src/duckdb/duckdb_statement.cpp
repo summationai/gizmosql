@@ -163,6 +163,7 @@ bool IsKillSessionCommand(const std::string& sql, std::string& target_session_id
   }
   return false;
 }
+#endif
 
 std::string UnquoteIdentifier(const std::string& identifier) {
   if (identifier.size() >= 2 && identifier.front() == '"' && identifier.back() == '"') {
@@ -209,7 +210,6 @@ bool CatalogExistsOnConnection(duckdb::Connection& connection,
   auto row = result->Fetch();
   return row != nullptr && row->size() > 0;
 }
-#endif
 
 // Replace GizmoSQL pseudo-functions with actual values:
 //   GIZMOSQL_CURRENT_SESSION() -> current session UUID
