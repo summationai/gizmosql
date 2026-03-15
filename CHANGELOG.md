@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Catalog visibility filtering** *(Enterprise)*: When `catalog_access` rules are present in a JWT token, metadata queries now automatically hide unauthorized catalogs. This applies to `SHOW DATABASES`, `SHOW ALL TABLES`, `information_schema.*` views, `duckdb_*()` table functions, and all Flight SQL metadata RPCs (`GetCatalogs`, `GetDbSchemas`, `GetTables`). The `system` and `temp` catalogs are always visible. Tokens without `catalog_access` rules are unaffected (backward compatible).
+
+### Fixed
+
+- **Multi-statement fallback now preserves SQL rewrites**: The fallback path for statements that cannot be prepared (e.g., `PIVOT`) now uses the rewritten SQL instead of the original, ensuring that `GIZMOSQL_*()` pseudo-function replacements and catalog visibility filters are applied correctly.
+- **`--init-sql-commands-file` path validation skipped when passed via CLI**: When the init SQL commands file was provided via the CLI flag (not the `INIT_SQL_COMMANDS_FILE` env var), the path resolution and existence check were accidentally nested inside the env var fallback block and never executed. The file path is now always validated regardless of how it was provided.
+## [1.19.3] - 2026-03-11
+
+### Added
+
+- **DuckDB connection tracking metric** (`gizmosql.duckdb.connections.open`): New OpenTelemetry up/down counter that tracks open DuckDB connection objects, including session connections and internal utility/instrumentation connections. Complements the existing `gizmosql.connections.active` metric which tracks GizmoSQL sessions.
+
+### Changed
+
+- **RAII-based DuckDB connection lifecycle**: DuckDB connections are now wrapped in a `TrackedDuckDBConnection` class that automatically increments/decrements the open connection counter. Session cleanup (interrupt in-flight queries, release prepared statements, decrement counters) is now handled by the `ClientSession` destructor instead of being scattered across multiple removal paths.
+- **Session-owned prepared statements**: Prepared statements are now owned by their parent `ClientSession` instead of a global server-level map. This establishes a clear ownership hierarchy (Server → Sessions → Statements) with consistent `weak_ptr` back-references at each level, matching the existing `ClientSession` → `DuckDBFlightSqlServer` pattern.
+
+## [1.19.2] - 2026-03-10
 ### Fixed
 
 - **Query and auth log levels now act as visibility thresholds**: When `--query-log-level` or `--auth-log-level` is set to `error`, routine INFO-level messages (e.g., "SQL command execution succeeded", "Successfully authenticated") are now properly suppressed instead of being promoted to ERROR severity. The component log level controls whether a message appears at all; the display severity always reflects the message's true nature ([#136](https://github.com/gizmodata/gizmosql/issues/136)).
