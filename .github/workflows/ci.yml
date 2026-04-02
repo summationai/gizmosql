@@ -49,7 +49,7 @@ jobs:
 
           docker buildx create --use --name mybuilder --driver docker-container
           aws --version
-      
+
       - name: get caller identity2
         run: |
           aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin 851725450642.dkr.ecr.us-west-2.amazonaws.com
@@ -62,7 +62,7 @@ jobs:
           options: |
             CMAKE_BUILD_TYPE=${{ env.CMAKE_BUILD_TYPE }}
             GIZMOSQL_ENTERPRISE=ON
-      
+
       - name: Zip artifacts
         run: |
           mv build/gizmosql_server build/gizmosql_client .
