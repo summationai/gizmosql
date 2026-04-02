@@ -39,6 +39,26 @@ jobs:
 
       - name: Install build requirements
         run: |
+          export DEBIAN_FRONTEND=noninteractive
+          export APT_LISTCHANGES_FRONTEND=none
+
+          sudo -E apt-get update
+          sudo -E apt-get install -y -o Dpkg::Use-Pty=0 \
+            build-essential \
+            ninja-build \
+            automake \
+            cmake \
+            gcc \
+            git \
+            libboost-all-dev \
+            libcurl4-openssl-dev \
+            libgflags-dev \
+            libssl-dev \
+            zlib1g-dev \
+            zip
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
           # If running on arm64, start docker daemon
           if [ "${{ matrix.platform }}" = "arm64" ]; then
             sudo mkdir -p /sys/fs/cgroup/docker
