@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **ArrowSchema leak in FetchResult()**: Added RAII guard to release exported `ArrowSchema` C structs on error and null-chunk paths in `DuckDBStatement::FetchResult()`. Previously, three early-return paths leaked the schema's release callbacks, which under concurrent load caused heap corruption and double-free crashes due to stale callbacks across allocator boundaries (DuckDB jemalloc vs glibc malloc). Fixes [#150](https://github.com/gizmodata/gizmosql/issues/150).
 ### Added
 
 - **Catalog visibility filtering** *(Enterprise)*: When `catalog_access` rules are present in a JWT token, metadata queries now automatically hide unauthorized catalogs. This applies to `SHOW DATABASES`, `SHOW ALL TABLES`, `information_schema.*` views, `duckdb_*()` table functions, and all Flight SQL metadata RPCs (`GetCatalogs`, `GetDbSchemas`, `GetTables`). The `system` and `temp` catalogs are always visible. Tokens without `catalog_access` rules are unaffected (backward compatible).
