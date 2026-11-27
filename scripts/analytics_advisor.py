@@ -200,6 +200,7 @@ def advise(args, ask=ask_agent):
             relation,
             args.history_days,
             {k.lower(): v for k, v in columns.items()},
+            instrumentation=getattr(args, "instrumentation_history", None),
         )
         # Validate the experiment has data in each pinned date window.
         config = workload(args.snapshot, key, checks, args.as_of, [], args.repetitions)
@@ -308,14 +309,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--export", required=True, type=Path, help="local Parquet export")
     parser.add_argument("--snapshot", required=True, help="export snapshot label")
-    parser.add_argument(
-        "--history", required=True, type=Path, help="local successful query history JSONL"
+    history = parser.add_mutually_exclusive_group(required=True)
+    history.add_argument(
+        "--instrumentation-history",
+        type=Path,
+        help="local GizmoSQL instrumentation Parquet export",
     )
+    history.add_argument("--history", type=Path, help="legacy query history JSONL")
     parser.add_argument(
         "--relation", required=True, help="exact logical relation in history"
     )
     parser.add_argument(
-        "--history-days", required=True, type=float, help="covered days in the log sample"
+        "--history-days",
+        required=True,
+        type=float,
+        help="covered days in the query history sample",
     )
     parser.add_argument(
         "--changes", type=Path, help="optional commit count and observation window JSON"

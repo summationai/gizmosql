@@ -76,6 +76,7 @@
 #include "enterprise/instrumentation/instrumentation_records.h"
 #include "enterprise/catalog_permissions/catalog_permissions_handler.h"
 #include "enterprise/enterprise_features.h"
+#include "enterprise/metrics/metrics_registry.h"
 #include "enterprise/metrics/metrics_service.h"
 #endif
 
@@ -91,6 +92,38 @@ inline std::shared_ptr<::gizmosql::TelemetrySpanScope> ActivateTelemetryScope(
     const flight::ServerCallContext& context) {
   return ::gizmosql::ActivateTelemetrySpan(context);
 }
+
+#if defined(GIZMOSQL_WITH_ANALYTICS_CACHE) && defined(GIZMOSQL_ENTERPRISE)
+class InstrumentedMaterializationReader final : public arrow::RecordBatchReader {
+ public:
+  InstrumentedMaterializationReader(std::shared_ptr<arrow::RecordBatchReader> reader,
+                                    std::shared_ptr<InstrumentationManager> manager,
+                                    const std::string& statement_id,
+                                    std::chrono::system_clock::time_point started)
+      : reader_(std::move(reader)),
+        execution_(std::move(manager),
+                   boost::uuids::to_string(boost::uuids::random_generator()()),
+                   statement_id, "", true, started) {
+    execution_.SetCompleted();
+  }
+
+  std::shared_ptr<arrow::Schema> schema() const override { return reader_->schema(); }
+
+  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* out) override {
+    auto status = reader_->ReadNext(out);
+    if (!status.ok()) {
+      execution_.SetError(status.ToString());
+    } else if (*out) {
+      execution_.IncrementRowsFetched((*out)->num_rows());
+    }
+    return status;
+  }
+
+ private:
+  std::shared_ptr<arrow::RecordBatchReader> reader_;
+  ExecutionInstrumentation execution_;
+};
+#endif
 
 class DuckDBTransactionGuard {
  public:
@@ -1827,21 +1860,20 @@ class DuckDBFlightSqlServer::Impl {
                                 nullptr, "DoGetStatement", false))
     statement->SetCallContext(&context);
 #ifdef GIZMOSQL_WITH_ANALYTICS_CACHE
-    // Use the normal reader whenever it must handle queueing, profiling,
-    // instrumentation, or a caller timeout.
+    // Use the normal reader for queueing, engine profiling, and caller timeouts.
     if (analytics_cache_ && transaction_id.starts_with("mv1_") &&
         !context.is_cancelled() && admission_controller_.Limit() == 0 &&
         client_session->capture_query_profile.load().value_or(
             GetCaptureQueryProfile(*client_session)) == QueryProfileMode::kOff &&
-#ifdef GIZMOSQL_ENTERPRISE
-        !instrumentation_manager_ &&
-#endif
         client_session->query_timeout.load().value_or(
             GetQueryTimeout(*client_session).ValueOr(1)) == 0) {
       if (auto prepared = statement->GetDuckDBStmt()) {
         ScopedSqlInFlight in_flight(client_session);
         ARROW_ASSIGN_OR_RAISE(auto schema, statement->GetSchema());
         const auto lookup_start = std::chrono::steady_clock::now();
+#ifdef GIZMOSQL_ENTERPRISE
+        const auto execution_start = std::chrono::system_clock::now();
+#endif
         auto cached = analytics_cache_->TryRead(*client_session, sql, transaction_id,
                                                 schema, *prepared);
         if (cached && !context.is_cancelled() && !client_session->kill_requested.load()) {
@@ -1867,6 +1899,17 @@ class DuckDBFlightSqlServer::Impl {
                                    {"lookup_ms", lookup_ms});
           }
           ::gizmosql::metrics::RecordQueryExecution("SELECT", "OK", lookup_ms);
+#ifdef GIZMOSQL_ENTERPRISE
+          if (auto metrics = client_session->metrics) {
+            metrics->StatementFinished(enterprise::StatementKind::Read, "",
+                                       lookup_ms / 1000.0);
+          }
+          if (instrumentation_manager_ && statement->GetInstrumentation()) {
+            cached = std::make_shared<InstrumentedMaterializationReader>(
+                std::move(cached), instrumentation_manager_, statement->GetStatementId(),
+                execution_start);
+          }
+#endif
           return std::make_unique<flight::RecordBatchStream>(std::move(cached));
         }
       }

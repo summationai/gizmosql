@@ -68,7 +68,7 @@ class AdvisorTest(unittest.TestCase):
     def test_history_to_verified_report(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            export, history = root / "source.parquet", root / "queries.jsonl"
+            export, history = root / "source.parquet", root / "queries.parquet"
             with duckdb.connect() as connection:
                 connection.execute(
                     """
@@ -77,24 +77,24 @@ class AdvisorTest(unittest.TestCase):
                 """,
                     [str(export)],
                 )
-            with history.open("w") as log:
-                for session in ("first", "second", "third"):
-                    for column in ("amount", "kind"):
-                        log.write(
-                            json.dumps(
-                                {
-                                    "ts": "2026-11-26T12:00:00Z",
-                                    "duration_ms": 2,
-                                    "kind": "sql",
-                                    "is_internal": False,
-                                    "status": "success",
-                                    "flight_method": "CreatePreparedStatement",
-                                    "session_id": session,
-                                    "sql": TEMPLATE.format(column=column),
-                                }
-                            )
-                            + "\n"
-                        )
+            with duckdb.connect() as db:
+                db.sql(
+                    """
+                                            SELECT row_number() OVER () AS execution_id,
+                               TIMESTAMPTZ '2026-11-26 12:00:00+00' AS execution_start_time,
+                               2 AS duration_ms, 'success' AS status, sql_text,
+                               'CreatePreparedStatement' AS flight_method, false AS is_internal,
+                               session_id, 'instance' AS instance_id, 'pilot' AS username,
+                               false AS has_binds, materialization_hit
+                        FROM (VALUES ('first'), ('second'), ('third')) AS sessions(session_id)
+                        CROSS JOIN (VALUES (?), (?)) AS checks(sql_text)
+                        CROSS JOIN (VALUES (false), (true)) AS origins(materialization_hit)
+                                        """,
+                    params=[
+                        TEMPLATE.format(column="amount"),
+                        TEMPLATE.format(column="kind"),
+                    ],
+                ).write_parquet(str(history))
             calls = []
 
             def agent(model, instruction, evidence, choices, *, review=False):
@@ -109,7 +109,8 @@ class AdvisorTest(unittest.TestCase):
 
             args = Namespace(
                 export=export,
-                history=history,
+                history=None,
+                instrumentation_history=history,
                 relation=RELATION,
                 snapshot="archive-1",
                 changes=None,
@@ -124,6 +125,10 @@ class AdvisorTest(unittest.TestCase):
             report = advise(args, ask=agent)
             self.assertEqual(len(calls), 2)
             self.assertEqual(report["advisor"]["history"]["cohort_read_sets"], 3)
+            self.assertEqual(
+                [check["executions"] for check in report["advisor"]["history"]["checks"]],
+                [3, 3],
+            )
             self.assertEqual(len(report["candidates"]), 3)
             self.assertNotIn("workload", report)
             for candidate in report["candidates"]:

@@ -122,10 +122,13 @@ class ExecutionInstrumentation {
   /// @param execution_id The unique ID for this execution (used in logging and DB)
   /// @param statement_id The statement being executed
   /// @param bind_parameters JSON-formatted bind parameters (empty string if none)
-  ExecutionInstrumentation(std::shared_ptr<InstrumentationManager> manager,
-                           const std::string& execution_id,
-                           const std::string& statement_id,
-                           const std::string& bind_parameters);
+  /// @param materialization_hit Whether a stored result served the execution
+  /// @param started Start of this execution, including cache lookup on a hit
+  ExecutionInstrumentation(
+      std::shared_ptr<InstrumentationManager> manager, const std::string& execution_id,
+      const std::string& statement_id, const std::string& bind_parameters,
+      bool materialization_hit = false,
+      std::chrono::system_clock::time_point started = std::chrono::system_clock::now());
 
   ~ExecutionInstrumentation();
 

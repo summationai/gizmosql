@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Licensed under the Apache License, Version 2.0.
-"""Build private DuckLake query materializations from GizmoSQL JSON query logs."""
+"""Build private DuckLake query materializations from GizmoSQL execution history."""
 
 import argparse
 import hashlib
@@ -14,6 +14,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from analytics_history import QUERY_BYTES, instrumentation_events, log_events
 from analytics_lineage import (
     IDENTIFIER,
     MAX_HISTORY_SNAPSHOTS,
@@ -27,8 +28,6 @@ from analytics_lineage import (
 
 import duckdb
 
-HISTORY_BYTES = 8 * 1024 * 1024
-QUERY_BYTES = 16 * 1024
 SETTINGS_SQL = """
     SELECT string_agg(lower(name) || '=' || hex(value), ',' ORDER BY lower(name))
     FROM duckdb_settings()
@@ -41,16 +40,22 @@ class SnapshotHistoryUnavailable(Exception):
     pass
 
 
-def recent_queries(log_path, user, history, now):
+def recent_queries(log_path, user, history, now, *, instrumentation=None):
     counts, elapsed, hits = Counter(), Counter(), Counter()
-    with log_path.open("rb") as log:
-        offset = max(0, log.seek(0, os.SEEK_END) - HISTORY_BYTES)
-        log.seek(offset)
-        lines = log.read(HISTORY_BYTES).split(b"\n")
-    # Do not count partial lines at either end of the scan.
-    for line in lines[bool(offset) : -1]:
+    events = (
+        instrumentation_events(
+            instrumentation,
+            {"DoGetStatement"},
+            start=now - history,
+            end=now,
+            user=user,
+            hits=True,
+        )
+        if instrumentation is not None
+        else log_events(log_path)
+    )
+    for event in events:
         try:
-            event = json.loads(line)
             if event.get("user") != user:
                 continue
             timestamp = datetime.fromisoformat(event["ts"])
@@ -228,12 +233,17 @@ def record_checked_snapshot(db, name, snapshot):
 
 def reconcile(db, key, args, metadata_catalog, metadata_schema):
     metadata = ".".join(map(quote_identifier, (metadata_catalog, metadata_schema)))
-    counts, elapsed, hits = recent_queries(
-        args.query_log,
-        args.user,
-        timedelta(seconds=args.history_seconds),
-        datetime.now(UTC),
-    )
+    try:
+        counts, elapsed, hits = recent_queries(
+            args.query_log,
+            args.user,
+            timedelta(seconds=args.history_seconds),
+            datetime.now(UTC),
+            instrumentation=args.instrumentation_history,
+        )
+    except (duckdb.Error, OSError, ValueError) as error:
+        logging.warning("query history unavailable (%s)", type(error).__name__)
+        return 1
     demand = counts + hits
     totals, durations, reuse, tables, spellings = Counter(), Counter(), Counter(), {}, {}
     allowed_relations = args.source_table | args.source_view
@@ -346,7 +356,13 @@ def source_table(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--query-log", required=True, type=Path)
+    history = parser.add_mutually_exclusive_group(required=True)
+    history.add_argument(
+        "--instrumentation-history",
+        type=Path,
+        help="refreshed GizmoSQL instrumentation Parquet export",
+    )
+    history.add_argument("--query-log", type=Path, help="legacy GizmoSQL query log")
     parser.add_argument(
         "--source-init-sql",
         required=True,
@@ -372,7 +388,7 @@ def main():
     parser.add_argument(
         "--source-epoch", required=True, help="change after catalog replacement/restore"
     )
-    parser.add_argument("--user", required=True, help="single trusted query-log username")
+    parser.add_argument("--user", required=True, help="single trusted GizmoSQL username")
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--min-runs", type=positive_int, default=3)
     parser.add_argument("--min-duration-ms", type=int, default=100)
@@ -438,11 +454,7 @@ def main():
                 parser.error(str(error))
             init_store(db)
             while True:
-                try:
-                    failures = reconcile(db, key, args, *metadata)
-                except FileNotFoundError:
-                    logging.warning("query log is unavailable")
-                    failures = 1
+                failures = reconcile(db, key, args, *metadata)
                 if args.once:
                     return int(failures > 0)
                 time.sleep(args.poll_seconds)

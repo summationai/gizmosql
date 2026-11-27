@@ -118,6 +118,37 @@ class EligibilityTest(unittest.TestCase):
             self.assertEqual(duration, {QUERY: 20})
             self.assertEqual(hits, {QUERY: 1})
 
+    def test_instrumentation_counts_source_cost_and_cache_demand_separately(self):
+        now = datetime.now(UTC)
+        with tempfile.TemporaryDirectory() as directory, duckdb.connect() as db:
+            archive = Path(directory) / "history.parquet"
+            db.sql(
+                """
+                                    SELECT record AS execution_id, ?::TIMESTAMPTZ - age AS execution_start_time,
+                           duration_ms, status, ? AS sql_text, flight_method, is_internal,
+                           'session' AS session_id, 'instance' AS instance_id, username,
+                           has_binds, materialization_hit
+                    FROM (VALUES
+                        (1, INTERVAL '0 seconds', 121, 'success', 'DoGetStatement', false, 'pilot', false, NULL),
+                        (2, INTERVAL '0 seconds', 20, 'success', 'DoGetStatement', false, 'pilot', false, true),
+                        (3, INTERVAL '2 hours', 300, 'success', 'DoGetStatement', false, 'pilot', false, false),
+                        (4, INTERVAL '0 seconds', 300, 'success', 'DoGetStatement', false, 'other', false, false),
+                        (5, INTERVAL '0 seconds', 300, 'error', 'DoGetStatement', false, 'pilot', false, false),
+                        (6, INTERVAL '0 seconds', 300, 'success', 'DoGetStatement', true, 'pilot', false, false),
+                        (7, INTERVAL '0 seconds', 300, 'success', 'DoGetStatement', false, 'pilot', true, false),
+                        (8, INTERVAL '0 seconds', 300, 'success', 'CreatePreparedStatement', false, 'pilot', false, false)
+                    ) AS rows(record, age, duration_ms, status, flight_method, is_internal,
+                              username, has_binds, materialization_hit)
+                                """,
+                params=[now, QUERY],
+            ).write_parquet(str(archive))
+            self.assertEqual(
+                recent_queries(
+                    None, "pilot", timedelta(hours=1), now, instrumentation=archive
+                ),
+                ({QUERY: 1}, {QUERY: 121}, {QUERY: 1}),
+            )
+
 
 @unittest.skipUnless(
     all(
@@ -169,14 +200,18 @@ class FlightSQLMaterializationTest(unittest.TestCase):
             f"LOAD '{extension_dir / (ext + '.duckdb_extension')}';"
             for ext in ("httpfs", "postgres_scanner", "ducklake")
         )
+        pg_dsn = f"host=127.0.0.1 port={pg_port} dbname=postgres user=postgres"
         attach = (
-            f"{load}\nATTACH 'ducklake:postgres:host=127.0.0.1 port={pg_port} "
-            f"dbname=postgres user=postgres' AS lake (DATA_PATH '{root / 'lake'}'"
+            f"{load}\nATTACH 'ducklake:postgres:{pg_dsn}' AS lake "
+            f"(DATA_PATH '{root / 'lake'}'"
         )
         init = root / "server.sql"
         worker_init = root / "worker.sql"
         init.write_text(attach + ");")
-        worker_init.write_text(attach + ", READ_ONLY);")
+        worker_init.write_text(
+            attach
+            + f", READ_ONLY); ATTACH '{pg_dsn}' AS lake_metadata (TYPE POSTGRES, READ_ONLY);"
+        )
         with duckdb.connect() as writer:
             writer.execute(init.read_text())
             writer.execute("CREATE TABLE lake.main.orders (region VARCHAR, total BIGINT)")
@@ -296,6 +331,8 @@ class FlightSQLMaterializationTest(unittest.TestCase):
                 query_log,
                 "--source-init-sql",
                 worker_init,
+                "--metadata-catalog",
+                "lake_metadata",
                 "--source-table",
                 ".".join(SOURCE),
                 "--source-table",

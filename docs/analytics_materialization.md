@@ -1,10 +1,10 @@
 # Automatic materialization pilot
 
-The optional `scripts/analytics_materializer.py` worker ranks recurring DuckLake queries from GizmoSQL’s JSON query log. It builds results in a private DuckDB database and checks for source commits each poll. With query reuse enabled, GizmoSQL can serve a fresh artifact to an eligible Flight SQL request.
+The optional `scripts/analytics_materializer.py` worker ranks recurring DuckLake queries from GizmoSQL session instrumentation. It builds results in a private DuckDB database and checks for source commits each poll. With query reuse enabled, GizmoSQL can serve a fresh artifact to an eligible Flight SQL request.
 
 ## Configure the pilot
 
-Use one PostgreSQL-backed DuckLake catalog, one trusted GizmoSQL username, and an explicit table allowlist. Run one worker per state directory. Use a separate operating-system identity for the worker when GizmoSQL users can read files on the server. Give the worker read-only access to source data and a private state directory. The server administrator must provide a protected log path because `--print-queries` records raw SQL.
+Use one PostgreSQL-backed DuckLake catalog, one trusted GizmoSQL username, and an explicit table allowlist. Run one worker per state directory. Use a separate operating-system identity for the worker when GizmoSQL users can read files on the server. Give the worker read-only access to source data and a private state directory. Keep the instrumentation export private because it contains SQL text.
 
 1. Install the worker dependencies from the repository root.
 
@@ -12,22 +12,25 @@ Use one PostgreSQL-backed DuckLake catalog, one trusted GizmoSQL username, and a
    python3 -m pip install -r scripts/requirements-analytics.txt
    ```
 
-2. Start the server with its usual DuckLake initialization and add `--print-queries --log-format json --query-log-level info --log-file /path/to/query.jsonl`. Use the same catalog alias as the worker. The GizmoSQL CLI's direct query path produces eligible executions.
+2. Use existing [session instrumentation](session_instrumentation.md) and export the query history as described below. The GizmoSQL CLI's direct query path produces eligible executions. Use the same catalog alias on the server and worker.
 
 3. Create a private worker initialization file with the DuckLake extension and a restricted source attachment. A local DuckDB secret named `analytics_source` should point to the same PostgreSQL-backed metadata and data location as the server. Use `READ_ONLY` even if the worker’s credentials already enforce read-only access.
 
    ```sql
+   LOAD postgres;
    LOAD ducklake;
    ATTACH 'ducklake:analytics_source' AS lake (READ_ONLY);
+   ATTACH 'host=metadata-reader dbname=ducklake' AS lake_metadata (TYPE POSTGRES, READ_ONLY);
    ```
 
 4. Run the worker.
 
    ```sh
    python3 scripts/analytics_materializer.py \
-     --query-log /path/to/query.jsonl \
+     --instrumentation-history /path/to/query-history.parquet \
      --source-init-sql /path/to/worker-source.sql \
      --source-table lake.main.orders \
+     --metadata-catalog lake_metadata \
      --source-epoch orders-catalog-v1 \
      --user analytics_pilot \
      --state-dir /path/to/private-state
@@ -41,13 +44,38 @@ SELECT SUM(total) AS gross FROM lake.main.orders WHERE region = 'EU';
 
 For view queries, add `--source-view lake.main.my_view` for each approved view, including any intermediate views. Approve every leaf table with `--source-table`. View bodies can project and alias columns, use simple filters, and join approved relations. Use fully qualified names throughout. The worker rejects cycles and incomplete lineage.
 
-If the metadata database contains several DuckLake schemas, set `--metadata-schema` to the schema of this catalog. If the source attachment sets `METADATA_CATALOG`, pass the same alias as `--metadata-catalog`.
+If the metadata database contains several DuckLake schemas, set `--metadata-schema` to the schema of this catalog. Use an explicit PostgreSQL metadata attachment when DuckLake hides its internal metadata catalog. Pass the explicit alias via `--metadata-catalog`.
+
+## Export query history
+
+Use a read-only connection to the existing instrumentation store. Export completed executions for the relevant cluster, time range, and users. For a continuous worker, write a new Parquet file in the private directory and atomically rename it over the previous export. Run the export on your telemetry replica when available. These inputs exclude raw bind values and query profiles.
+
+Run this example from a local DuckDB connection that can read the instrumentation tables. Replace the catalog, schema, and time window as needed. The default instrumentation catalog is `_gizmosql_instr`.
+
+```sql
+COPY (
+    SELECT e.execution_id, e.execution_start_time, e.duration_ms, e.status,
+           st.sql_text, st.flight_method, st.is_internal,
+           s.session_id, s.instance_id, s.username,
+           coalesce(e.bind_parameters, '[]') <> '[]' AS has_binds,
+           e.materialization_hit
+    FROM _gizmosql_instr.main.sql_executions e
+    JOIN _gizmosql_instr.main.sql_statements st USING (statement_id)
+    JOIN _gizmosql_instr.main.sessions s USING (session_id)
+    WHERE e.status = 'success'
+      AND e.execution_start_time >= current_timestamp - INTERVAL '1 hour'
+      AND st.is_internal = false
+      AND st.flight_method IN ('DoGetStatement', 'CreatePreparedStatement')
+) TO '/path/to/query-history.next.parquet' (FORMAT PARQUET);
+```
+
+When the server version predates cache-hit instrumentation, export `false AS materialization_hit`. For the offline advisor, match `--history-days` to the actual export coverage. Use a PostgreSQL instrumentation replica or an existing offline export when available. For the default file-backed store on a running server, an administrator can run the inner `SELECT` over Flight SQL and write the result to Parquet on the client. Open the database file directly only after the writer releases its lock. Without instrumentation, the worker's `--query-log` and advisor's `--history` still accept legacy JSONL.
 
 ## Enable automatic query reuse
 
-Use the stable DuckDB 1.5 channel for server reuse. Queue limits, session timeouts, and enabled query profiling or execution instrumentation use normal source execution. Pass `--publish` to the worker. It publishes bounded Arrow IPC files and exact-query manifests under the private state directory. Give the server process read access to that directory and put it outside DuckDB's allowed SQL filesystem paths. The server reads artifacts through C++ without attaching the worker database to DuckDB. Run the updated worker once to republish older manifests in format 2.
+Use the stable DuckDB 1.5 channel for server reuse. Queue limits, session timeouts, and enabled DuckDB profiling use normal source execution. Built-in execution instrumentation records cache hits with `materialization_hit = true`. Pass `--publish` to the worker. It publishes bounded Arrow IPC files and exact-query manifests under the private state directory. Give the server process read access to that directory and put it outside DuckDB's allowed SQL filesystem paths. The server reads artifacts through C++ without attaching the worker database to DuckDB. Run the updated worker once to republish older manifests in format 2.
 
-Use a read-only DuckLake attachment on the GizmoSQL serving process. Load all required extensions and attach the source first, then seal the server configuration in its initialization SQL.
+Use a read-only DuckLake attachment on the GizmoSQL serving process. Load all required extensions and attach the source and read-only PostgreSQL metadata under the same aliases as the worker, then seal the server configuration in its initialization SQL.
 
 ```sql
 -- If the catalog uses local Parquet files, allow just its data directory.
@@ -71,7 +99,7 @@ Use the same source, settings, catalog incarnation and username in both processe
 
 The server binds and authorizes the original query before checking the artifact. It checks function resolution and settings in the caller's session. It verifies the current DuckLake snapshot with a live snapshot ID read and a PostgreSQL lookup of the published snapshot's metadata row. Snapshot history stays on the worker. The metadata catalog alias and schema must match on the two attachments so the server can look up the same metadata row.
 
-Any commit advances the snapshot and sends reads to the source until the worker verifies or rebuilds the artifact. An unavailable or invalid artifact also causes source execution. A hit writes an `Analytics materialization hit` event with `lookup_ms`. With query logging enabled at INFO, it includes the query for reuse tracking.
+Any commit advances the snapshot and sends reads to the source until the worker verifies or rebuilds the artifact. An unavailable or invalid artifact also causes source execution. A hit also writes an `Analytics materialization hit` log event for diagnostics.
 
 ## Inspect builds and refreshes
 
@@ -93,7 +121,7 @@ Commit a change to `lake.main.orders` from another connection and run another pa
 ## Pilot behavior
 
 - Admission uses successful direct Flight SQL source executions. The supported SQL subset uses fully qualified allowlisted relations, named `COUNT`, `SUM`, `MIN`, or `MAX` results, optional simple grouping, column-to-literal filters and inner or left equality joins. The worker parses and reserializes accepted queries before executing them.
-- Each pass scans up to 8 MiB of the current log file. The defaults are a one-hour window, at least three source executions, at least 100 ms average source execution time, 30-second polls, eight materializations, and a 100,000-row limit per artifact. Candidates rank by total observed source duration. Remaining slots can retain existing artifacts based on recent cache hits, even after their source execution records age out.
+- Each pass uses up to 4,096 recent matching instrumentation executions. The defaults are a one-hour window, at least three source executions, at least 100 ms average source execution time, 30-second polls, eight materializations, and a 100,000-row limit per artifact. Candidates rank by total observed source duration. Remaining slots can retain existing artifacts based on recent cache hits, even after their source execution records age out.
 - The worker records table and view edges using DuckLake object IDs and UUIDs. A change to a transitive source or its view definition rebuilds the affected artifacts. Missing, expired or unrecognized changeset history triggers a conservative rebuild when lineage can be resolved. Existing artifacts acquire lineage on their next successful refresh.
 - The state directory stores result rows, admitted SQL definitions and a private key used to derive artifact IDs. Keep that directory and the source initialization file restricted. The worker runs in a separate DuckDB instance. Stop it or use one-shot runs when inspecting the artifact file because DuckDB holds the writer lock while the worker is active.
 
@@ -133,19 +161,19 @@ Consumers can use those results to rank proposals or add their own SQL candidate
 
 ### Run the optimization advisor
 
-Run the advisor as an offline job with a Parquet export, saved GizmoSQL JSON query history, and an explicit mapping from the logical relation in the history to the local export. Claude Code must be installed and signed in. The advisor sends only aggregate workload and benchmark statistics to the configured model, with agent tools disabled.
+Run the advisor as an offline job with a Parquet export, a GizmoSQL instrumentation export, and an explicit mapping from the logical relation in the history to the local export. Claude Code must be installed and signed in. The advisor sends only aggregate workload and benchmark statistics to the configured model, with agent tools disabled.
 
 ```sh
 python3 scripts/analytics_advisor.py \
   --export /path/to/cube-slice.parquet --snapshot orders-cube-archive-v1 \
-  --history /path/to/saved-query-history.jsonl \
+  --instrumentation-history /path/to/query-history.parquet \
   --relation main.orders_cube --history-days 30 \
   --changes /path/to/source-changes.json \
   --as-of 2026-01-04 --as-of 2025-06-30 \
   --reports /path/to/private-replay-reports
 ```
 
-History uses the existing GizmoSQL query fields `kind`, `status`, `is_internal`, `flight_method`, `ts`, `duration_ms`, and `sql`. Include `session_id`, `instance_id`, and `user` to identify compatible batches. The advisor reads up to 8 MiB and counts only observed executions within the supplied coverage window. Successful direct and prepared events are eligible for analysis. The first supported family covers recurring `COUNT(*) - COUNT(column)` and `COUNT(*)` checks sharing a date range. Relative dates use the explicit archive anchors for replay.
+The advisor counts successful direct and prepared executions within the supplied coverage window. It uses session and instance IDs to identify compatible batches and excludes cache hits from source-cost estimates. The first supported family covers recurring `COUNT(*) - COUNT(column)` and `COUNT(*)` checks sharing a date range. Relative dates use the explicit archive anchors for replay.
 
 The agent ranks bounded templates for sorting, a daily rollup, and fusing compatible checks. Local code generates the candidate SQL. The offline harness checks complete results, median and p90 latency, and build cost. The agent reviews that evidence together with observed volume, source execution latency, and churn. The deterministic gate requires replay improvement and a minimum estimated daily payoff before model advice can mark a candidate worth following up.
 

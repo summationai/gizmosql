@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 
 import sqlglot
+from analytics_history import QUERY_BYTES, instrumentation_events, log_events
 from analytics_lineage import (
     allowed_args,
     quote_identifier,
@@ -16,7 +17,6 @@ from analytics_lineage import (
 )
 from sqlglot import exp
 
-HISTORY_BYTES = 8 * 1024 * 1024
 READ_METHODS = {"DoGetStatement", "CreatePreparedStatement"}
 
 
@@ -117,28 +117,29 @@ def quality_check(sql, relation):
         return None
 
 
-def read_history(path, relation, days, columns):
-    with path.open("rb") as handle:
-        offset = max(0, handle.seek(0, 2) - HISTORY_BYTES)
-        handle.seek(offset)
-        events = []
-        for raw in handle.read(HISTORY_BYTES).split(b"\n")[bool(offset) : -1]:
-            try:
-                event = json.loads(raw)
-                if (
-                    event.get("kind") != "sql"
-                    or event.get("status") != "success"
-                    or event.get("is_internal") not in (False, "false")
-                    or event.get("flight_method") not in READ_METHODS
-                ):
-                    continue
-                ts = datetime.fromisoformat(event["ts"])
-                duration = float(event["duration_ms"])
-                if ts.utcoffset() is None or not 0 <= duration < float("inf"):
-                    continue
-                events.append((ts, duration, event))
-            except (AttributeError, KeyError, OverflowError, TypeError, ValueError):
+def read_history(path, relation, days, columns, *, instrumentation=None):
+    history = (
+        instrumentation_events(instrumentation, READ_METHODS)
+        if instrumentation is not None
+        else log_events(path)
+    )
+    events = []
+    for event in history:
+        try:
+            if (
+                event.get("kind") != "sql"
+                or event.get("status") != "success"
+                or event.get("is_internal") not in (False, "false")
+                or event.get("flight_method") not in READ_METHODS
+            ):
                 continue
+            ts = datetime.fromisoformat(event["ts"])
+            duration = float(event["duration_ms"])
+            if ts.utcoffset() is None or not 0 <= duration < float("inf"):
+                continue
+            events.append((ts, duration, event))
+        except (KeyError, OverflowError, TypeError, ValueError):
+            continue
     if not events:
         raise ValueError("no successful user SQL events in history")
     end = max(t for t, _, _ in events)
@@ -152,7 +153,7 @@ def read_history(path, relation, days, columns):
         if (
             isinstance(sql, str)
             and sql.lstrip().lower().startswith("select")
-            and len(sql.encode()) <= 16 * 1024
+            and len(sql.encode()) <= QUERY_BYTES
         ):
             result = quality_check(sql, relation)
             if result and columns.get(result[0][0]) == "DATE" and result[1][0] in columns:

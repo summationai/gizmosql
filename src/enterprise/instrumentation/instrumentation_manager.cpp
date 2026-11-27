@@ -142,6 +142,7 @@ ALTER TABLE instances ADD COLUMN IF NOT EXISTS instance_tag JSON;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS cluster_id UUID;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_tag JSON;
 ALTER TABLE sql_statements ADD COLUMN IF NOT EXISTS query_tag JSON;
+ALTER TABLE sql_executions ADD COLUMN IF NOT EXISTS materialization_hit BOOLEAN;
 ALTER TABLE sql_executions ADD COLUMN IF NOT EXISTS enqueue_time TIMESTAMP WITH TIME ZONE;
 ALTER TABLE sql_executions ADD COLUMN IF NOT EXISTS query_profile JSON;
 ALTER TABLE sql_executions ADD COLUMN IF NOT EXISTS fetch_start_time TIMESTAMP WITH TIME ZONE;
@@ -508,6 +509,8 @@ std::vector<std::string> BuildSchemaStatements(const std::string& p,
       "CREATE INDEX IF NOT EXISTS idx_sql_executions_enqueue_time ON " + p + "sql_executions(enqueue_time)",
       "CREATE INDEX IF NOT EXISTS idx_sql_executions_status ON " + p + "sql_executions(status)",
   };
+  stmts.push_back("ALTER TABLE " + p +
+                  "sql_executions ADD COLUMN IF NOT EXISTS materialization_hit BOOLEAN");
   // Substitute the JSON column type (the literals above use " JSON", which
   // only ever appears as a type token here — never in a value or identifier).
   if (json_type != "JSON") {

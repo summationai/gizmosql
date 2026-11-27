@@ -350,6 +350,7 @@ Tracks individual executions of statements (one per execution).
 | `cursor_close_time` | TIMESTAMPTZ | When the client released the statement/stream; `cursor_close_time - fetch_end_time` is how long a client sat on a fully-drained statement |
 | `rows_fetched` | BIGINT | Number of rows returned |
 | `status` | VARCHAR | 'queued', 'executing', 'success', 'error', 'timeout', 'cancelled' |
+| `materialization_hit` | BOOLEAN | Whether the automatic analytics pilot served a cached result. `NULL` for older execution records. |
 | `duration_ms` | BIGINT | **Engine** execution time in milliseconds (`execution_end_time - execution_start_time`; excludes admission-queue wait and result streaming) |
 | `total_duration_ms` | BIGINT | Full execution wall clock through result delivery (`fetch_end_time - execution_start_time`; still excludes queue wait and idle-open-cursor time) |
 | `error_message` | VARCHAR | Error message if failed |
