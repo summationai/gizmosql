@@ -117,7 +117,7 @@ def quality_check(sql, relation):
         return None
 
 
-def read_history(path, relation, days, columns, *, instrumentation=None):
+def history_events(path, days, *, instrumentation=None):
     history = (
         instrumentation_events(instrumentation, READ_METHODS)
         if instrumentation is not None
@@ -143,12 +143,17 @@ def read_history(path, relation, days, columns, *, instrumentation=None):
     if not events:
         raise ValueError("no successful user SQL events in history")
     end = max(t for t, _, _ in events)
+    events = [row for row in events if row[0] > end - timedelta(days=days)]
+    return events, {
+        "window_days": days,
+        "window_end": end.isoformat(),
+        "read_events": len(events),
+    }
+
+
+def quality_history(events, coverage, relation, columns):
     groups = defaultdict(list)
-    observed = 0
     for ts, duration, event in events:
-        if ts <= end - timedelta(days=days):
-            continue
-        observed += 1
         sql = event.get("sql")
         if (
             isinstance(sql, str)
@@ -199,9 +204,8 @@ def read_history(path, relation, days, columns, *, instrumentation=None):
     if len(checks) == 1:
         batches = volumes[checks[0]]
     evidence = {
-        "window_days": days,
-        "window_end": end.isoformat(),
-        "read_events": observed,
+        **coverage,
+        "family": "quality_checks",
         "supported_events": sum(map(len, groups.values())),
         "matching_events": sum(methods.values()),
         "method_counts": dict(methods),

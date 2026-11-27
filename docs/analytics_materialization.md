@@ -173,13 +173,15 @@ python3 scripts/analytics_advisor.py \
   --reports /path/to/private-replay-reports
 ```
 
-The advisor counts successful direct and prepared executions within the supplied coverage window. It uses session and instance IDs to identify compatible batches and excludes cache hits from source-cost estimates. The first supported family covers recurring `COUNT(*) - COUNT(column)` and `COUNT(*)` checks sharing a date range. Relative dates use the explicit archive anchors for replay.
+The advisor counts successful direct and prepared executions within the supplied coverage window. It uses session and instance IDs to identify compatible batches and excludes cache hits from source-cost estimates. The advisor discovers recurring daily `SUM` queries that group by `STRFTIME(date, '%Y-%m-%d')`, including queries with one string equality filter. It tests grouping by the native `DATE` and applying the format after aggregation. When no daily SUM shape recurs, it checks for `COUNT(*) - COUNT(column)` and `COUNT(*)` queries sharing a date range. Relative dates use the explicit archive anchors for replay.
 
 The agent ranks bounded templates for sorting, a daily rollup, and fusing compatible checks. Local code generates the candidate SQL. The offline harness checks complete results, median and p90 latency, and build cost. The agent reviews that evidence together with observed volume, source execution latency, and churn. The deterministic gate requires replay improvement and a minimum estimated daily payoff before model advice can mark a candidate worth following up.
 
 Provide optional change evidence as JSON with `relation`, timezone-aware `start` and `end`, `commits`, and `basis` of `observed` or `archived_proxy`. The estimate charges a full rebuild per changed-table commit and amortizes the initial artifact build over 30 days. Missing or archived churn cannot qualify a persistent artifact when the payoff otherwise passes. Adjust the default 1,000 ms per day threshold with `--min-net-ms-per-day`. These estimates use sampled source timings and local replay ratios, so they are for prioritization.
 
 Use `GET /v1/recommendations` for the latest conclusions and payoff estimates in the report directory. A replay without advisor output does not replace the current recommendations. The run and candidate endpoints retain verification and latency measurements for inspection.
+
+After result verification, a daily SUM recommendation includes `rewrite.queries` with parameterized SQL, parameter types, and positional bind order. Bind the same `anchor` date wherever it appears in `bind`. The contract identifies the relation and archive snapshot used for verification. The API omits observed literal values from these templates.
 
 A verified daily rollup includes a `view` contract with a stable name, source relation, column schema, backing-table SQL, view SQL, and parameterized query examples with output mappings. Agents can discover it in the latest recommendations and use the query template after the consumer installs the view in an authorized catalog. The backing table holds precomputed rows. The view gives callers a stable SQL name.
 

@@ -10,7 +10,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from analytics_history_workload import STRATEGIES, read_history, reusable_view, workload
+from analytics_daily_aggregate import STRATEGY as DAILY_SUM_STRATEGY
+from analytics_daily_aggregate import daily_payoff, daily_workload, discover_daily_sums
+from analytics_history_workload import (
+    STRATEGIES,
+    history_events,
+    quality_history,
+    reusable_view,
+    workload,
+)
 from analytics_lineage import quote_identifier
 from analytics_replay import replay, write_report
 
@@ -164,7 +172,8 @@ Choose and rank up to three of the supplied strategy IDs to replay. A strategy t
 uneconomic is still useful as an offline comparison. Consider observed volume, source latency,
 cohorts and commit rate. Treat sampled history as a lower bound on traffic and archived churn
 as a proxy. Sort copies preserve independent queries; the daily rollup requires refresh and
-the fused query requires a caller batch. Return decisions using only the provided schema."""
+the fused query requires a caller batch. Grouping by DATE before formatting is an independent
+SQL rewrite with no artifact to refresh. Return decisions using only the provided schema."""
 
 REVIEW = """You are the second stage of an offline query optimization benchmark.
 Review each candidate using its verified replay, tail latency, observed workload latency and
@@ -195,35 +204,43 @@ def advise(args, ask=ask_agent):
                 "DESCRIBE SELECT * FROM read_parquet(?)", [str(parquet)]
             ).fetchall()
         )
-        key, checks, history = read_history(
+        columns = {k.lower(): v for k, v in columns.items()}
+        events, coverage = history_events(
             args.history,
-            relation,
             args.history_days,
-            {k.lower(): v for k, v in columns.items()},
             instrumentation=getattr(args, "instrumentation_history", None),
         )
-        # Validate the experiment has data in each pinned date window.
-        config = workload(args.snapshot, key, checks, args.as_of, [], args.repetitions)
-        day = quote_identifier(key[0])
-        for case in config["cases"]:
-            result = db.execute(
-                f"SELECT count(*) FROM read_parquet(?) WHERE {day} BETWEEN ?::DATE AND ?::DATE",
-                [str(parquet), *case["params"].values()],
-            ).fetchone()[0]
-            if not result:
-                raise ValueError("replay date window contains no rows")
+        daily, history = discover_daily_sums(events, coverage, relation, columns)
+        rewrite = None
+        if daily:
+            config, rewrite = daily_workload(args, relation, daily, db)
+            feasible = [DAILY_SUM_STRATEGY]
+        else:
+            key, checks, history = quality_history(events, coverage, relation, columns)
+            # Validate the experiment has data in each pinned date window.
+            config = workload(
+                args.snapshot, key, checks, args.as_of, [], args.repetitions
+            )
+            day = quote_identifier(key[0])
+            for case in config["cases"]:
+                result = db.execute(
+                    f"SELECT count(*) FROM read_parquet(?) WHERE {day} BETWEEN ?::DATE AND ?::DATE",
+                    [str(parquet), *case["params"].values()],
+                ).fetchone()[0]
+                if not result:
+                    raise ValueError("replay date window contains no rows")
+            feasible = list(
+                STRATEGIES
+                if history["cohort_read_sets"] and len(checks) > 1
+                else STRATEGIES[:2]
+                if len(checks) == 1
+                else STRATEGIES[:1]
+            )
         if churn["basis"] == "observed" and (
             datetime.fromisoformat(churn["end"])
             < datetime.fromisoformat(history["window_end"]) - timedelta(days=1)
         ):
             churn["basis"] = "archived_proxy"
-        feasible = list(
-            STRATEGIES
-            if history["cohort_read_sets"] and len(checks) > 1
-            else STRATEGIES[:2]
-            if len(checks) == 1
-            else STRATEGIES[:1]
-        )
     context = {
         "history": history,
         "source_changes": churn,
@@ -233,18 +250,23 @@ def advise(args, ask=ask_agent):
     proposals = ask(args.model, PROPOSE, context, feasible)
     if not proposals:
         raise ValueError("agent selected no strategies for replay")
-    config = workload(
-        args.snapshot,
-        key,
-        checks,
-        args.as_of,
-        [p["id"] for p in proposals],
-        args.repetitions,
-    )
+    if not daily:
+        config = workload(
+            args.snapshot,
+            key,
+            checks,
+            args.as_of,
+            [p["id"] for p in proposals],
+            args.repetitions,
+        )
     report = replay(config, parquet, include_workload=args.include_workload)
     candidates = report["candidates"]
     for candidate in candidates:
-        candidate["payoff"] = estimate(candidate, history, churn, args.min_net_ms_per_day)
+        candidate["payoff"] = (
+            daily_payoff(candidate, history, args.min_net_ms_per_day)
+            if daily
+            else estimate(candidate, history, churn, args.min_net_ms_per_day)
+        )
     reviews = [
         {
             "id": c["id"],
@@ -290,9 +312,13 @@ def advise(args, ask=ask_agent):
                 else "agent_deferred"
             ),
         }
-        view = reusable_view(relation, key[0], checks, args.snapshot, candidate)
-        if view:
-            candidate["view"] = view
+        if daily:
+            if candidate["status"] in ("equivalent", "faster_on_replay"):
+                candidate["rewrite"] = rewrite
+        else:
+            view = reusable_view(relation, key[0], checks, args.snapshot, candidate)
+            if view:
+                candidate["view"] = view
     report["advisor"] = {
         "model": args.model,
         "relation": relation,

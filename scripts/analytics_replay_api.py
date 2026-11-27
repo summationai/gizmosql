@@ -65,7 +65,15 @@ def latest_recommendations(directory):
         "recommendations": [
             {
                 key: c[key]
-                for key in ("id", "strategy", "status", "advice", "payoff", "view")
+                for key in (
+                    "id",
+                    "strategy",
+                    "status",
+                    "advice",
+                    "payoff",
+                    "view",
+                    "rewrite",
+                )
                 if key in c
             }
             for c in latest["candidates"]

@@ -160,12 +160,23 @@ def evaluate(db, baseline, original, scenario, cases, rounds, ordered):
                 else original
             )
             for case in cases:
+                left, right = original, rewritten
+                if "query_ids" in case:
+                    ids = set(case["query_ids"])
+                    left = [query for query in original if query.get("id") in ids]
+                    right = [query for query in rewritten if query.get("id") in ids]
+                    if (
+                        not ids
+                        or {q["id"] for q in left} != ids
+                        or {q["id"] for q in right} != ids
+                    ):
+                        raise ValueError("case query IDs must exist in both query lists")
                 result["cases"].append(
                     compare_case(
                         baseline,
                         candidate,
-                        original,
-                        rewritten,
+                        left,
+                        right,
                         case,
                         rounds,
                         ordered,
