@@ -29,6 +29,7 @@
 #   GIZMOSQL_QUERY_LOG_LEVEL  --query-log-level
 #   GIZMOSQL_AUTH_LOG_LEVEL   --auth-log-level
 #   GIZMOSQL_SESSION_LOG_LEVEL --session-log-level
+#   GIZMOSQL_ANALYTICS_CACHE_CONFIG  Private JSON config for optional query reuse
 #   GIZMOSQL_HEALTH_CHECK_QUERY      --health-check-query
 #   GIZMOSQL_HEALTH_CHECK_INTERVAL_SECONDS   --health-check-interval-seconds (default 5)
 #   GIZMOSQL_HEALTH_CHECK_STALENESS_SECONDS  --health-check-staleness-seconds (default 3x interval)

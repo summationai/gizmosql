@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Automatic analytics pilot**: an opt-in DuckLake materialization worker,
+  snapshot-checked Flight SQL reuse on the stable DuckDB channel, and an offline
+  replay advisor with a read-only recommendations API.
 - **Edge channel `-adbc` images**: `gizmodata/gizmosql-edge:<version>-adbc` and
   `:<version>-slim-adbc`, plus `latest-adbc` and `latest-slim-adbc` (Docker Hub
   and GHCR), built on every release. They carry the same drivers and versions as

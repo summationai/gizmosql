@@ -1,0 +1,50 @@
+{
+  "snapshot": "orders-cube-archive-v1",
+  "repetitions": 8,
+  "cases": [
+    {"id": "recent-week", "params": {"start": "2025-12-26", "end": "2026-01-02"}},
+    {"id": "quarter", "params": {"start": "2025-10-05", "end": "2026-01-02"}}
+  ],
+  "baseline": [
+    {
+      "id": "demand",
+      "sql": "SELECT count(*) AS total, count(*) - count(amount) AS missing FROM data WHERE date BETWEEN ?::DATE AND ?::DATE",
+      "bind": ["start", "end"]
+    },
+    {
+      "id": "segment",
+      "sql": "SELECT count(*) AS total, count(*) - count(segment_code) AS missing FROM data WHERE date BETWEEN ?::DATE AND ?::DATE",
+      "bind": ["start", "end"]
+    }
+  ],
+  "candidates": [
+    {"id": "sorted-date", "sort_by": ["date"]},
+    {
+      "id": "daily-rollup",
+      "build_sql": "SELECT date, count(*) AS total, count(*) - count(amount) AS demand_missing, count(*) - count(segment_code) AS segment_missing FROM source GROUP BY date",
+      "queries": [
+        {
+          "sql": "SELECT coalesce(sum(total), 0)::BIGINT AS total, coalesce(sum(demand_missing), 0)::BIGINT AS demand_missing, coalesce(sum(segment_missing), 0)::BIGINT AS segment_missing FROM data WHERE date BETWEEN ?::DATE AND ?::DATE",
+          "bind": ["start", "end"],
+          "outputs": {
+            "demand": {"total": "total", "missing": "demand_missing"},
+            "segment": {"total": "total", "missing": "segment_missing"}
+          }
+        }
+      ]
+    },
+    {
+      "id": "fused-checks",
+      "queries": [
+        {
+          "sql": "SELECT count(*) AS total, count(*) - count(amount) AS demand_missing, count(*) - count(segment_code) AS segment_missing FROM data WHERE date BETWEEN ?::DATE AND ?::DATE",
+          "bind": ["start", "end"],
+          "outputs": {
+            "demand": {"total": "total", "missing": "demand_missing"},
+            "segment": {"total": "total", "missing": "segment_missing"}
+          }
+        }
+      ]
+    }
+  ]
+}

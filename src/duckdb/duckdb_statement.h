@@ -159,6 +159,7 @@ class DuckDBStatement {
   long GetLastExecutionDurationMs() const;
 
   std::string GetSessionId() const;
+  const std::string& GetStatementId() const { return statement_id_; }
 
   duckdb::vector<duckdb::Value> bind_parameters;
 
