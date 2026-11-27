@@ -14,8 +14,6 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import duckdb
-
 from analytics_lineage import (
     IDENTIFIER,
     MAX_HISTORY_SNAPSHOTS,
@@ -27,6 +25,7 @@ from analytics_lineage import (
     quote_identifier,
 )
 
+import duckdb
 
 HISTORY_BYTES = 8 * 1024 * 1024
 QUERY_BYTES = 16 * 1024
@@ -49,7 +48,7 @@ def recent_queries(log_path, user, history, now):
         log.seek(offset)
         lines = log.read(HISTORY_BYTES).split(b"\n")
     # Do not count partial lines at either end of the scan.
-    for line in lines[bool(offset):-1]:
+    for line in lines[bool(offset) : -1]:
         try:
             event = json.loads(line)
             if event.get("user") != user:
@@ -62,15 +61,25 @@ def recent_queries(log_path, user, history, now):
                 continue
             if event.get("kind") == "analytics" and event.get("status") == "hit":
                 hits[sql] += 1
-            elif (event.get("kind") == "sql" and event.get("status") == "success"
-                  and event.get("is_internal") in (False, "false")
-                  and event.get("direct_execution") in (False, "false")
-                  and event.get("flight_method") == "DoGetStatement"):
+            elif (
+                event.get("kind") == "sql"
+                and event.get("status") == "success"
+                and event.get("is_internal") in (False, "false")
+                and event.get("direct_execution") in (False, "false")
+                and event.get("flight_method") == "DoGetStatement"
+            ):
                 duration = int(event["duration_ms"])
                 if duration >= 0:
                     counts[sql] += 1
                     elapsed[sql] += duration
-        except (AttributeError, KeyError, OverflowError, RecursionError, TypeError, ValueError):
+        except (
+            AttributeError,
+            KeyError,
+            OverflowError,
+            RecursionError,
+            TypeError,
+            ValueError,
+        ):
             continue
     return counts, elapsed, hits
 
@@ -104,40 +113,71 @@ def refresh(db, name, definition, roots, args, metadata, *, check_history=True):
     try:
         # First source access pins this transaction's DuckLake snapshot, before CTAS.
         snapshot_id = db.execute(f"FROM {catalog}.current_snapshot()").fetchone()[0]
-        snapshot = db.execute(f"""
+        snapshot = db.execute(
+            f"""
             SELECT snapshot_id, epoch_us(snapshot_time), schema_version
             FROM {metadata}.ducklake_snapshot WHERE snapshot_id = ?
-        """, [snapshot_id]).fetchone()
+        """,
+            [snapshot_id],
+        ).fetchone()
         if snapshot is None:
             raise ValueError("expected a committed source snapshot")
-        edges = catalog_lineage(db, metadata, snapshot_id, name, roots, args.source_table, args.source_view)
-        engine, path, extension = db.execute("""
+        edges = catalog_lineage(
+            db, metadata, snapshot_id, name, roots, args.source_table, args.source_view
+        )
+        engine, path, extension = db.execute(
+            """
             SELECT version(), data_path, extension_version FROM ducklake_settings(?)
-        """, [roots[0][0]]).fetchone()
-        profile = json.dumps({"engine": engine, "data_path": path, "extension": extension,
-                              "settings": db.execute(SETTINGS_SQL).fetchone()[0]})
-        current = db.execute("""
+        """,
+            [roots[0][0]],
+        ).fetchone()
+        profile = json.dumps(
+            {
+                "engine": engine,
+                "data_path": path,
+                "extension": extension,
+                "settings": db.execute(SETTINGS_SQL).fetchone()[0],
+            }
+        )
+        current = db.execute(
+            """
             SELECT m.source_epoch, s.snapshot_id, s.snapshot_time_us, s.schema_version
             FROM main.materializations m JOIN main.materialization_refresh_state s USING (name)
             JOIN main.materialization_build_profile p USING (name)
             WHERE m.name = ? AND p.profile = ?
-        """, [name, profile]).fetchone()
-        previous_edges = {Edge(*row) for row in db.execute("""
+        """,
+            [name, profile],
+        ).fetchone()
+        previous_edges = {
+            Edge(*row)
+            for row in db.execute(
+                """
             SELECT dependent, source_relation, source_kind, source_id, source_uuid
             FROM main.materialization_dependencies WHERE name = ?
-        """, [name]).fetchall()}
-        if check_history and current and current[0] == args.source_epoch and previous_edges == edges:
+        """,
+                [name],
+            ).fetchall()
+        }
+        if (
+            check_history
+            and current
+            and current[0] == args.source_epoch
+            and previous_edges == edges
+        ):
             anchor = current[1:]
             if anchor == snapshot:
                 db.rollback()
                 return
             if 0 < snapshot_id - anchor[0] <= MAX_HISTORY_SNAPSHOTS:
                 try:
-                    history = db.execute(f"""
+                    history = db.execute(
+                        f"""
                         SELECT snapshot_id, epoch_us(snapshot_time), schema_version, changes
                         FROM {catalog}.snapshots()
                         WHERE snapshot_id BETWEEN ? AND ? ORDER BY snapshot_id
-                    """, [anchor[0], snapshot_id]).fetchall()
+                    """,
+                        [anchor[0], snapshot_id],
+                    ).fetchall()
                 except duckdb.Error as error:
                     # Older extensions can reject unknown change types during binding.
                     raise SnapshotHistoryUnavailable from error
@@ -146,19 +186,32 @@ def refresh(db, name, definition, roots, args, metadata, *, check_history=True):
                     db.commit()
                     return
         # LIMIT bounds the stored result. Rollback preserves the prior generation on failure.
-        db.execute(f'CREATE OR REPLACE TABLE main."{name}" AS '
-                   f'SELECT * FROM ({definition}) AS materialized LIMIT {args.max_rows + 1}')
-        if db.execute(f'SELECT count(*) FROM main."{name}"').fetchone()[0] > args.max_rows:
+        db.execute(
+            f'CREATE OR REPLACE TABLE main."{name}" AS '
+            f"SELECT * FROM ({definition}) AS materialized LIMIT {args.max_rows + 1}"
+        )
+        if (
+            db.execute(f'SELECT count(*) FROM main."{name}"').fetchone()[0]
+            > args.max_rows
+        ):
             raise ValueError("materialized result exceeds row limit")
-        db.execute("""
+        db.execute(
+            """
             INSERT OR REPLACE INTO main.materializations
             VALUES (?, ?, ?, ?, ?, ?, ?, current_timestamp)
-        """, [name, ".".join(roots[0]), definition, args.source_epoch, *snapshot])
+        """,
+            [name, ".".join(roots[0]), definition, args.source_epoch, *snapshot],
+        )
         db.execute("DELETE FROM main.materialization_dependencies WHERE name = ?", [name])
-        db.executemany("INSERT INTO main.materialization_dependencies VALUES (?, ?, ?, ?, ?, ?)",
-                       [(name, *edge) for edge in edges])
+        db.executemany(
+            "INSERT INTO main.materialization_dependencies VALUES (?, ?, ?, ?, ?, ?)",
+            [(name, *edge) for edge in edges],
+        )
         record_checked_snapshot(db, name, snapshot)
-        db.execute("INSERT OR REPLACE INTO main.materialization_build_profile VALUES (?, ?)", [name, profile])
+        db.execute(
+            "INSERT OR REPLACE INTO main.materialization_build_profile VALUES (?, ?)",
+            [name, profile],
+        )
         db.commit()
     except (duckdb.Error, ValueError, SnapshotHistoryUnavailable):
         db.rollback()
@@ -167,14 +220,20 @@ def refresh(db, name, definition, roots, args, metadata, *, check_history=True):
 
 
 def record_checked_snapshot(db, name, snapshot):
-    db.execute("INSERT OR REPLACE INTO main.materialization_refresh_state VALUES (?, ?, ?, ?)",
-               [name, *snapshot])
+    db.execute(
+        "INSERT OR REPLACE INTO main.materialization_refresh_state VALUES (?, ?, ?, ?)",
+        [name, *snapshot],
+    )
 
 
 def reconcile(db, key, args, metadata_catalog, metadata_schema):
     metadata = ".".join(map(quote_identifier, (metadata_catalog, metadata_schema)))
-    counts, elapsed, hits = recent_queries(args.query_log, args.user,
-                                           timedelta(seconds=args.history_seconds), datetime.now(UTC))
+    counts, elapsed, hits = recent_queries(
+        args.query_log,
+        args.user,
+        timedelta(seconds=args.history_seconds),
+        datetime.now(UTC),
+    )
     demand = counts + hits
     totals, durations, reuse, tables, spellings = Counter(), Counter(), Counter(), {}, {}
     allowed_relations = args.source_table | args.source_view
@@ -189,14 +248,20 @@ def reconcile(db, key, args, metadata_catalog, metadata_schema):
             totals[definition] += counts[sql]
             durations[definition] += elapsed[sql]
             reuse[definition] += hits[sql]
-    qualified = {sql for sql, count in totals.items()
-                 if count >= args.min_runs and durations[sql] >= count * args.min_duration_ms}
-    ranked = sorted(qualified,
-                    key=lambda sql: (-durations[sql], -totals[sql], sql))
-    existing = dict(db.execute("SELECT name, definition FROM main.materializations").fetchall())
+    qualified = {
+        sql
+        for sql, count in totals.items()
+        if count >= args.min_runs and durations[sql] >= count * args.min_duration_ms
+    }
+    ranked = sorted(qualified, key=lambda sql: (-durations[sql], -totals[sql], sql))
+    existing = dict(
+        db.execute("SELECT name, definition FROM main.materializations").fetchall()
+    )
     # Hits retain already admitted work without treating cache lookup time as source cost.
-    retained = sorted({definition for definition in existing.values() if reuse[definition]},
-                      key=lambda definition: (-reuse[definition], definition))
+    retained = sorted(
+        {definition for definition in existing.values() if reuse[definition]},
+        key=lambda definition: (-reuse[definition], definition),
+    )
     selected = {}
     for definition in dict.fromkeys(ranked + retained):
         if len(selected) >= args.max_views:
@@ -210,9 +275,17 @@ def reconcile(db, key, args, metadata_catalog, metadata_schema):
             db.begin()
             try:
                 db.execute(f'DROP TABLE IF EXISTS main."{name}"')
-                db.execute("DELETE FROM main.materialization_dependencies WHERE name = ?", [name])
-                db.execute("DELETE FROM main.materialization_refresh_state WHERE name = ?", [name])
-                db.execute("DELETE FROM main.materialization_build_profile WHERE name = ?", [name])
+                db.execute(
+                    "DELETE FROM main.materialization_dependencies WHERE name = ?", [name]
+                )
+                db.execute(
+                    "DELETE FROM main.materialization_refresh_state WHERE name = ?",
+                    [name],
+                )
+                db.execute(
+                    "DELETE FROM main.materialization_build_profile WHERE name = ?",
+                    [name],
+                )
                 db.execute("DELETE FROM main.materializations WHERE name = ?", [name])
                 db.commit()
             except duckdb.Error:
@@ -226,7 +299,15 @@ def reconcile(db, key, args, metadata_catalog, metadata_schema):
                 refresh(db, name, definition, tables[definition], args, metadata)
             except SnapshotHistoryUnavailable:
                 logging.info("snapshot history unavailable for %s, rebuilding", name)
-                refresh(db, name, definition, tables[definition], args, metadata, check_history=False)
+                refresh(
+                    db,
+                    name,
+                    definition,
+                    tables[definition],
+                    args,
+                    metadata,
+                    check_history=False,
+                )
         except (duckdb.Error, ValueError) as error:
             logging.warning("refresh failed for %s (%s)", name, type(error).__name__)
             failures += 1
@@ -235,8 +316,15 @@ def reconcile(db, key, args, metadata_catalog, metadata_schema):
     if args.publish:
         from analytics_publication import publish
 
-        publish(db, args.state_dir / "published", key, args, ready,
-                metadata_catalog, metadata_schema)
+        publish(
+            db,
+            args.state_dir / "published",
+            key,
+            args,
+            ready,
+            metadata_catalog,
+            metadata_schema,
+        )
     return failures
 
 
@@ -250,21 +338,40 @@ def positive_int(value):
 def source_table(value):
     parts = tuple(value.lower().split("."))
     if len(parts) != 3 or not all(map(IDENTIFIER.fullmatch, parts)):
-        raise argparse.ArgumentTypeError("use catalog.schema.table with simple identifiers")
+        raise argparse.ArgumentTypeError(
+            "use catalog.schema.table with simple identifiers"
+        )
     return parts
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query-log", required=True, type=Path)
-    parser.add_argument("--source-init-sql", required=True, type=Path,
-                        help="trusted SQL file that attaches the DuckLake source READ_ONLY")
-    parser.add_argument("--source-table", required=True, type=source_table, action="append")
-    parser.add_argument("--source-view", type=source_table, action="append", default=[],
-                        help="approved DuckLake view, including intermediate views")
-    parser.add_argument("--metadata-catalog", help="override the DuckLake metadata catalog alias")
-    parser.add_argument("--metadata-schema", help="select the DuckLake metadata schema when ambiguous")
-    parser.add_argument("--source-epoch", required=True, help="change after catalog replacement/restore")
+    parser.add_argument(
+        "--source-init-sql",
+        required=True,
+        type=Path,
+        help="trusted SQL file that attaches the DuckLake source READ_ONLY",
+    )
+    parser.add_argument(
+        "--source-table", required=True, type=source_table, action="append"
+    )
+    parser.add_argument(
+        "--source-view",
+        type=source_table,
+        action="append",
+        default=[],
+        help="approved DuckLake view, including intermediate views",
+    )
+    parser.add_argument(
+        "--metadata-catalog", help="override the DuckLake metadata catalog alias"
+    )
+    parser.add_argument(
+        "--metadata-schema", help="select the DuckLake metadata schema when ambiguous"
+    )
+    parser.add_argument(
+        "--source-epoch", required=True, help="change after catalog replacement/restore"
+    )
     parser.add_argument("--user", required=True, help="single trusted query-log username")
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--min-runs", type=positive_int, default=3)
@@ -273,7 +380,9 @@ def main():
     parser.add_argument("--poll-seconds", type=positive_int, default=30)
     parser.add_argument("--max-views", type=positive_int, default=8)
     parser.add_argument("--max-rows", type=positive_int, default=100_000)
-    parser.add_argument("--publish", action="store_true", help="publish Arrow results for server lookup")
+    parser.add_argument(
+        "--publish", action="store_true", help="publish Arrow results for server lookup"
+    )
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     args.source_table, args.source_view = set(args.source_table), set(args.source_view)
@@ -284,29 +393,47 @@ def main():
         parser.error("use one source catalog and a nonnegative duration threshold")
     args.state_dir.mkdir(mode=0o700, exist_ok=True)
     state = args.state_dir.lstat()
-    if not stat.S_ISDIR(state.st_mode) or state.st_uid != os.getuid() or state.st_mode & 0o077:
+    if (
+        not stat.S_ISDIR(state.st_mode)
+        or state.st_uid != os.getuid()
+        or state.st_mode & 0o077
+    ):
         parser.error("state directory must be private and owned by the worker user")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
-        with duckdb.connect(str(args.state_dir / "artifacts.duckdb"),
-                            config={"threads": 1, "memory_limit": "512MB",
-                                    "max_temp_directory_size": "1GB"}) as db:
+        with duckdb.connect(
+            str(args.state_dir / "artifacts.duckdb"),
+            config={
+                "threads": 1,
+                "memory_limit": "512MB",
+                "max_temp_directory_size": "1GB",
+            },
+        ) as db:
             key_path = args.state_dir / "identity.key"
             if not key_path.exists():
-                with os.fdopen(os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as key_file:
+                with os.fdopen(
+                    os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb"
+                ) as key_file:
                     key_file.write(os.urandom(32))
             key = key_path.read_bytes()
             if len(key) != 32:
                 parser.error("state directory contains an invalid identity key")
             db.execute(args.source_init_sql.read_text())
             catalog = next(iter(catalogs))
-            attached = db.execute("""
+            attached = db.execute(
+                """
                 SELECT type, readonly FROM duckdb_databases() WHERE lower(database_name) = ?
-            """, [catalog]).fetchone()
+            """,
+                [catalog],
+            ).fetchone()
             if attached != ("ducklake", True):
-                parser.error("source SQL must attach the specified DuckLake catalog READ_ONLY")
+                parser.error(
+                    "source SQL must attach the specified DuckLake catalog READ_ONLY"
+                )
             try:
-                metadata = metadata_location(db, catalog, args.metadata_catalog, args.metadata_schema)
+                metadata = metadata_location(
+                    db, catalog, args.metadata_catalog, args.metadata_schema
+                )
             except ValueError as error:
                 parser.error(str(error))
             init_store(db)

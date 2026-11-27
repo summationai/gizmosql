@@ -3,12 +3,11 @@
 """Serve offline analytics replay reports over a read-only loopback API."""
 
 import argparse
+import json
+import re
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 from pathlib import Path
-import re
-
 
 RUN_ID = re.compile(r"[0-9a-f]{32}")
 
@@ -21,8 +20,11 @@ def report_at(directory, run_id):
         return None
     try:
         report = json.loads(path.read_text())
-        if (report["id"] == run_id and report["format"] == 1
-            and all(key in report for key in ("created_at", "dataset", "candidates"))):
+        if (
+            report["id"] == run_id
+            and report["format"] == 1
+            and all(key in report for key in ("created_at", "dataset", "candidates"))
+        ):
             return report
     except (OSError, KeyError, TypeError, ValueError):
         pass
@@ -43,7 +45,9 @@ def latest_recommendations(directory):
         if not isinstance(advisor, dict):
             continue
         try:
-            timestamp = datetime.fromisoformat(advisor.get("last_run_at", report["created_at"]))
+            timestamp = datetime.fromisoformat(
+                advisor.get("last_run_at", report["created_at"])
+            )
             if timestamp.utcoffset() is None:
                 continue
         except (TypeError, ValueError):
@@ -59,7 +63,11 @@ def latest_recommendations(directory):
         "dataset": latest["dataset"],
         "advisor": latest["advisor"],
         "recommendations": [
-            {key: c[key] for key in ("id", "strategy", "status", "advice", "payoff", "view") if key in c}
+            {
+                key: c[key]
+                for key in ("id", "strategy", "status", "advice", "payoff", "view")
+                if key in c
+            }
             for c in latest["candidates"]
         ],
     }
@@ -84,8 +92,10 @@ def handler(directory):
             if path == ["v1", "recommendations"]:
                 return self.reply(200, latest_recommendations(directory))
             if path == ["v1", "runs"]:
-                summaries = [{key: report[key] for key in ("id", "created_at", "dataset")}
-                             for report in reports_in(directory)]
+                summaries = [
+                    {key: report[key] for key in ("id", "created_at", "dataset")}
+                    for report in reports_in(directory)
+                ]
                 summaries.sort(key=lambda item: item["created_at"], reverse=True)
                 return self.reply(200, {"runs": summaries})
             if path[:2] == ["v1", "runs"] and len(path) in (3, 5):
@@ -106,8 +116,13 @@ def main():
     parser.add_argument("--reports", required=True, type=Path)
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
-    with ThreadingHTTPServer(("127.0.0.1", args.port), handler(args.reports.resolve())) as server:
-        print(f"Analytics replay API listening on http://127.0.0.1:{server.server_port}", flush=True)
+    with ThreadingHTTPServer(
+        ("127.0.0.1", args.port), handler(args.reports.resolve())
+    ) as server:
+        print(
+            f"Analytics replay API listening on http://127.0.0.1:{server.server_port}",
+            flush=True,
+        )
         server.serve_forever()
 
 

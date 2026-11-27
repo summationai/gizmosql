@@ -58,22 +58,28 @@ bool CanUseSourceSnapshot(duckdb::Connection& connection, const std::string& set
     // change the query even when external access and configuration are locked.
     static const std::string aggregates[] = {"count", "sum", "min", "max"};
     for (const auto& name : aggregates) {
-      const duckdb::EntryLookupInfo lookup(duckdb::CatalogType::SCALAR_FUNCTION_ENTRY, name);
+      const duckdb::EntryLookupInfo lookup(duckdb::CatalogType::SCALAR_FUNCTION_ENTRY,
+                                           name);
       auto entry = duckdb::Catalog::GetEntry(*connection.context, "", "", lookup,
-                                            duckdb::OnEntryNotFound::RETURN_NULL);
+                                             duckdb::OnEntryNotFound::RETURN_NULL);
       if (!entry || entry->type != duckdb::CatalogType::AGGREGATE_FUNCTION_ENTRY ||
           !entry->ParentCatalog().IsSystemCatalog())
         return;
     }
     // Compare the caller's settings with the build profile, including when the
     // server allows specific settings to be changed after locking configuration.
-    static const std::string names[] = {
-        "arrow_large_buffer_size", "arrow_lossless_conversion", "arrow_output_version",
-        "calendar", "default_collation", "old_implicit_casting", "timezone"};
+    static const std::string names[] = {"arrow_large_buffer_size",
+                                        "arrow_lossless_conversion",
+                                        "arrow_output_version",
+                                        "calendar",
+                                        "default_collation",
+                                        "old_implicit_casting",
+                                        "timezone"};
     std::string current;
     for (const auto& name : names) {
       duckdb::Value value;
-      if (!connection.context->TryGetCurrentSetting(name, value) || value.IsNull()) continue;
+      if (!connection.context->TryGetCurrentSetting(name, value) || value.IsNull())
+        continue;
       if (!current.empty()) current += ',';
       current += name + '=';
       for (const unsigned char byte : value.ToString()) {
@@ -182,7 +188,8 @@ std::shared_ptr<arrow::RecordBatchReader> AnalyticsCache::TryRead(
     const auto id = std::to_string(checked[0].get<int64_t>());
     const auto metadata_catalog = manifest.at("metadata_catalog").get<std::string>();
     const auto metadata_schema = manifest.at("metadata_schema").get<std::string>();
-    const auto point_lookup = "SELECT snapshot_id, snapshot_time, schema_version FROM \"" +
+    const auto point_lookup =
+        "SELECT snapshot_id, snapshot_time, schema_version FROM \"" +
         duckdb::StringUtil::Replace(metadata_schema, "\"", "\"\"") +
         "\".ducklake_snapshot WHERE snapshot_id = " + id;
     // A private connection preserves the Flight session's active result.
@@ -190,13 +197,20 @@ std::shared_ptr<arrow::RecordBatchReader> AnalyticsCache::TryRead(
     const auto snapshot = probe.Query(
         "SELECT s.snapshot_id, system.main.epoch_us(s.snapshot_time), s.schema_version, "
         "system.main.version(), d.data_path, d.extension_version, db.database_oid "
-        "FROM \"" + catalog_ + "\".current_snapshot() c JOIN system.main.postgres_query(" +
+        "FROM \"" +
+        catalog_ + "\".current_snapshot() c JOIN system.main.postgres_query(" +
         duckdb::Value(metadata_catalog).ToSQLString() + ", " +
-        duckdb::Value(point_lookup).ToSQLString() + ") s ON s.snapshot_id = c.id "
-        "CROSS JOIN system.main.ducklake_settings('" + catalog_ + "') d "
-        "JOIN system.main.duckdb_databases() db ON db.database_name = '" + catalog_ + "' "
+        duckdb::Value(point_lookup).ToSQLString() +
+        ") s ON s.snapshot_id = c.id "
+        "CROSS JOIN system.main.ducklake_settings('" +
+        catalog_ +
+        "') d "
+        "JOIN system.main.duckdb_databases() db ON db.database_name = '" +
+        catalog_ +
+        "' "
         "WHERE NOT system.main.current_setting('enable_external_access') AND "
-        "system.main.current_setting('lock_configuration') AND d.catalog_type = 'postgres' "
+        "system.main.current_setting('lock_configuration') AND d.catalog_type = "
+        "'postgres' "
         "AND db.type = 'ducklake' AND db.readonly");
     if (snapshot->HasError() || snapshot->RowCount() != 1 ||
         !CanUseSourceSnapshot(connection, settings) || session.kill_requested.load())

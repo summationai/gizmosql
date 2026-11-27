@@ -1772,7 +1772,8 @@ class DuckDBFlightSqlServer::Impl {
     ARROW_ASSIGN_OR_RAISE(analytics_cache_, AnalyticsCache::Open(config_path));
     return Status::OK();
 #else
-    return Status::NotImplemented("Analytics reuse requires the stable DuckDB 1.5 channel");
+    return Status::NotImplemented(
+        "Analytics reuse requires the stable DuckDB 1.5 channel");
 #endif
   }
 
@@ -1801,8 +1802,7 @@ class DuckDBFlightSqlServer::Impl {
       transaction_id = analytics_cache_->TicketProof(*client_session, query, *schema);
     }
 #endif
-    ARROW_ASSIGN_OR_RAISE(auto ticket,
-                          EncodeTransactionQuery(query, transaction_id))
+    ARROW_ASSIGN_OR_RAISE(auto ticket, EncodeTransactionQuery(query, transaction_id))
     std::vector<flight::FlightEndpoint> endpoints{
         flight::FlightEndpoint{std::move(ticket), {}, std::nullopt, ""}};
     ARROW_ASSIGN_OR_RAISE(
@@ -1831,35 +1831,40 @@ class DuckDBFlightSqlServer::Impl {
     // instrumentation, or a caller timeout.
     if (analytics_cache_ && transaction_id.starts_with("mv1_") &&
         !context.is_cancelled() && admission_controller_.Limit() == 0 &&
-        client_session->capture_query_profile.value_or(GetCaptureQueryProfile(*client_session)) ==
-            QueryProfileMode::kOff &&
+        client_session->capture_query_profile.load().value_or(
+            GetCaptureQueryProfile(*client_session)) == QueryProfileMode::kOff &&
 #ifdef GIZMOSQL_ENTERPRISE
         !instrumentation_manager_ &&
 #endif
-        client_session->query_timeout.value_or(GetQueryTimeout(*client_session).ValueOr(1)) == 0) {
+        client_session->query_timeout.load().value_or(
+            GetQueryTimeout(*client_session).ValueOr(1)) == 0) {
       if (auto prepared = statement->GetDuckDBStmt()) {
         ScopedSqlInFlight in_flight(client_session);
         ARROW_ASSIGN_OR_RAISE(auto schema, statement->GetSchema());
         const auto lookup_start = std::chrono::steady_clock::now();
-        auto cached = analytics_cache_->TryRead(*client_session, sql, transaction_id, schema, *prepared);
+        auto cached = analytics_cache_->TryRead(*client_session, sql, transaction_id,
+                                                schema, *prepared);
         if (cached && !context.is_cancelled() && !client_session->kill_requested.load()) {
           const auto active = client_session->ActiveSqlHandle();
           if (active && *active == statement->GetStatementId()) {
             client_session->SetActiveSqlHandle("");
           }
           const auto lookup_ms = std::chrono::duration<double, std::milli>(
-                                     std::chrono::steady_clock::now() - lookup_start).count();
-          const auto log_level = client_session->query_log_level.value_or(
-              GetQueryLogLevel(*client_session).ValueOr(arrow::util::ArrowLogLevel::ARROW_WARNING));
+                                     std::chrono::steady_clock::now() - lookup_start)
+                                     .count();
+          const auto log_level = client_session->query_log_level.load().value_or(
+              GetQueryLogLevel(*client_session)
+                  .ValueOr(arrow::util::ArrowLogLevel::ARROW_WARNING));
           if (GetPrintQueries(*client_session).ValueOr(false) &&
               log_level <= arrow::util::ArrowLogLevel::ARROW_INFO) {
             GIZMOSQL_LOGKV_SESSION(INFO, client_session, "Analytics materialization hit",
-                                  {"kind", "analytics"}, {"status", "hit"},
-                                  {"lookup_ms", lookup_ms}, {"sql", redact_sql_for_logs(sql)});
+                                   {"kind", "analytics"}, {"status", "hit"},
+                                   {"lookup_ms", lookup_ms},
+                                   {"sql", redact_sql_for_logs(sql)});
           } else {
             GIZMOSQL_LOGKV_SESSION(INFO, client_session, "Analytics materialization hit",
-                                  {"kind", "analytics"}, {"status", "hit"},
-                                  {"lookup_ms", lookup_ms});
+                                   {"kind", "analytics"}, {"status", "hit"},
+                                   {"lookup_ms", lookup_ms});
           }
           ::gizmosql::metrics::RecordQueryExecution("SELECT", "OK", lookup_ms);
           return std::make_unique<flight::RecordBatchStream>(std::move(cached));

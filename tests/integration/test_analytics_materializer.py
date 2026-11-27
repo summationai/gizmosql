@@ -32,8 +32,11 @@ def unused_port():
 
 class EligibilityTest(unittest.TestCase):
     def test_approved_aggregates_only(self):
-        for query in (QUERY, "select count(*) as n from lake.main.orders",
-                      "select region, count(*) as n from lake.main.orders group by region"):
+        for query in (
+            QUERY,
+            "select count(*) as n from lake.main.orders",
+            "select region, count(*) as n from lake.main.orders group by region",
+        ):
             with self.subTest(query=query):
                 self.assertEqual(candidate(query, {SOURCE})[1], (SOURCE,))
         for query in (
@@ -45,7 +48,9 @@ class EligibilityTest(unittest.TestCase):
             QUERY.replace("SUM(total)", "SUM(total + random())"),
             QUERY.replace("'EU'", "?"),
             QUERY.replace("'EU'", "(SELECT 'EU')"),
-            QUERY.replace("SUM(total) AS gross", "SUM(total) AS gross, COUNT(*) AS gross"),
+            QUERY.replace(
+                "SUM(total) AS gross", "SUM(total) AS gross, COUNT(*) AS gross"
+            ),
             "SELECT COUNT(*) AS n FROM (SELECT * FROM lake.main.orders) AS other",
             "SELECT COUNT(*) AS n FROM lake.main.orders JOIN lake.main.private_orders USING (region)",
         ):
@@ -56,7 +61,11 @@ class EligibilityTest(unittest.TestCase):
         anchor, head = (4, 100, 1), (5, 200, 1)
         edges = {Edge("mv", "lake.main.orders", "table", 17, "uuid")}
         first = (*anchor, {"tables_created": ["main.orders"]})
-        self.assertFalse(changes_affect([first, (*head, {"inlined_insert": ["18"]})], anchor, head, edges))
+        self.assertFalse(
+            changes_affect(
+                [first, (*head, {"inlined_insert": ["18"]})], anchor, head, edges
+            )
+        )
         for history in (
             [(*head, {"tables_inserted_into": ["18"]})],
             [first, (*head, {"tables_deleted_from": ["17"]})],
@@ -71,25 +80,56 @@ class EligibilityTest(unittest.TestCase):
 
     def test_history_filters_and_ignores_partial_log_record(self):
         now = datetime.now(UTC)
-        good = dict(sql=QUERY, kind="sql", status="success", is_internal="false", user="pilot",
-                    ts=now.isoformat(), direct_execution="false", flight_method="DoGetStatement",
-                    duration_ms=20)
+        good = dict(
+            sql=QUERY,
+            kind="sql",
+            status="success",
+            is_internal="false",
+            user="pilot",
+            ts=now.isoformat(),
+            direct_execution="false",
+            flight_method="DoGetStatement",
+            duration_ms=20,
+        )
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "query.jsonl"
-            events = [good, {**good, "user": "other"}, {**good, "status": "failure"},
-                      {**good, "flight_method": "GetFlightInfoStatement"},
-                      dict(kind="analytics", status="hit", sql=QUERY, user="pilot", ts=now.isoformat()),
-                      {**good, "ts": (now - timedelta(hours=2)).isoformat()}]
-            log.write_text("bad json\n" + "\n".join(map(json.dumps, events)) + "\n" + json.dumps(good))
+            events = [
+                good,
+                {**good, "user": "other"},
+                {**good, "status": "failure"},
+                {**good, "flight_method": "GetFlightInfoStatement"},
+                dict(
+                    kind="analytics",
+                    status="hit",
+                    sql=QUERY,
+                    user="pilot",
+                    ts=now.isoformat(),
+                ),
+                {**good, "ts": (now - timedelta(hours=2)).isoformat()},
+            ]
+            log.write_text(
+                "bad json\n"
+                + "\n".join(map(json.dumps, events))
+                + "\n"
+                + json.dumps(good)
+            )
             count, duration, hits = recent_queries(log, "pilot", timedelta(hours=1), now)
             self.assertEqual(count, {QUERY: 1})
             self.assertEqual(duration, {QUERY: 20})
             self.assertEqual(hits, {QUERY: 1})
 
 
-@unittest.skipUnless(all(os.environ.get(name) for name in (
-    "GIZMOSQL_TEST_BIN_DIR", "GIZMOSQL_TEST_POSTGRES_BIN_DIR", "GIZMOSQL_TEST_EXTENSION_DIR"
-)), "set GizmoSQL, PostgreSQL and DuckDB extension directories for the Flight SQL integration")
+@unittest.skipUnless(
+    all(
+        os.environ.get(name)
+        for name in (
+            "GIZMOSQL_TEST_BIN_DIR",
+            "GIZMOSQL_TEST_POSTGRES_BIN_DIR",
+            "GIZMOSQL_TEST_EXTENSION_DIR",
+        )
+    ),
+    "set GizmoSQL, PostgreSQL and DuckDB extension directories for the Flight SQL integration",
+)
 class FlightSQLMaterializationTest(unittest.TestCase):
     def test_real_history_and_external_commit(self):
         with tempfile.TemporaryDirectory(prefix="gizmosql-mv-") as directory:
@@ -99,19 +139,40 @@ class FlightSQLMaterializationTest(unittest.TestCase):
             extension_dir = Path(os.environ["GIZMOSQL_TEST_EXTENSION_DIR"])
             pg_port = unused_port()
             pg_data = root / "pg"
-            self.command(pg_bin / "initdb", "-D", pg_data, "-U", "postgres", "--auth=trust", "--no-locale")
-            self.command(pg_bin / "pg_ctl", "-D", pg_data, "-l", root / "pg.log", "-o",
-                         f"-h 127.0.0.1 -p {pg_port} -k {root}", "-w", "start")
+            self.command(
+                pg_bin / "initdb",
+                "-D",
+                pg_data,
+                "-U",
+                "postgres",
+                "--auth=trust",
+                "--no-locale",
+            )
+            self.command(
+                pg_bin / "pg_ctl",
+                "-D",
+                pg_data,
+                "-l",
+                root / "pg.log",
+                "-o",
+                f"-h 127.0.0.1 -p {pg_port} -k {root}",
+                "-w",
+                "start",
+            )
             try:
                 self.exercise_flow(root, pg_port, unused_port(), gizmo_bin, extension_dir)
             finally:
                 self.command(pg_bin / "pg_ctl", "-D", pg_data, "-m", "fast", "-w", "stop")
 
     def exercise_flow(self, root, pg_port, flight_port, gizmo_bin, extension_dir):
-        load = "\n".join(f"LOAD '{extension_dir / (ext + '.duckdb_extension')}';"
-                         for ext in ("httpfs", "postgres_scanner", "ducklake"))
-        attach = (f"{load}\nATTACH 'ducklake:postgres:host=127.0.0.1 port={pg_port} "
-                  f"dbname=postgres user=postgres' AS lake (DATA_PATH '{root / 'lake'}'")
+        load = "\n".join(
+            f"LOAD '{extension_dir / (ext + '.duckdb_extension')}';"
+            for ext in ("httpfs", "postgres_scanner", "ducklake")
+        )
+        attach = (
+            f"{load}\nATTACH 'ducklake:postgres:host=127.0.0.1 port={pg_port} "
+            f"dbname=postgres user=postgres' AS lake (DATA_PATH '{root / 'lake'}'"
+        )
         init = root / "server.sql"
         worker_init = root / "worker.sql"
         init.write_text(attach + ");")
@@ -121,9 +182,13 @@ class FlightSQLMaterializationTest(unittest.TestCase):
             writer.execute("CREATE TABLE lake.main.orders (region VARCHAR, total BIGINT)")
             writer.execute("INSERT INTO lake.main.orders VALUES ('EU', 11), ('US', 99)")
             writer.execute("CREATE SCHEMA lake.audit")
-            writer.execute("CREATE TABLE lake.audit.orders (region VARCHAR, total BIGINT)")
+            writer.execute(
+                "CREATE TABLE lake.audit.orders (region VARCHAR, total BIGINT)"
+            )
             writer.execute("CREATE TABLE lake.main.inventory AS SELECT 1 AS id")
-            writer.execute("CREATE TABLE lake.main.regions AS SELECT 'EU' AS region UNION ALL SELECT 'US'")
+            writer.execute(
+                "CREATE TABLE lake.main.regions AS SELECT 'EU' AS region UNION ALL SELECT 'US'"
+            )
             writer.execute("""
                 CREATE VIEW lake.main.filtered_orders AS
                 SELECT region, total FROM lake.main.orders WHERE region = 'EU'
@@ -139,45 +204,120 @@ class FlightSQLMaterializationTest(unittest.TestCase):
         server_init = init
         if exercise_execution:
             server_init = root / "sealed-server.sql"
-            server_init.write_text(worker_init.read_text() + """
+            server_init.write_text(
+                worker_init.read_text()
+                + """
                 SET enable_external_access = false;
                 SET allowed_configs = ['default_collation'];
                 SET lock_configuration = true;
-            """)
-        env = {key: value for key, value in os.environ.items() if not key.startswith("GIZMOSQL_")}
+            """
+            )
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIZMOSQL_")
+        }
         env["GIZMOSQL_PASSWORD"] = "materializer-integration-only"
         if exercise_execution:
             config = root / "materialization.json"
-            config.write_text(json.dumps(dict(state_dir=str(state), catalog="lake", source_epoch="integration",
-                                              user="pilot")))
+            config.write_text(
+                json.dumps(
+                    dict(
+                        state_dir=str(state),
+                        catalog="lake",
+                        source_epoch="integration",
+                        user="pilot",
+                    )
+                )
+            )
             env["GIZMOSQL_ANALYTICS_CACHE_CONFIG"] = str(config)
         startup_log = root / "startup.log"
         with startup_log.open("w") as startup:
-            server = subprocess.Popen([gizmo_bin / "gizmosql_server", "--hostname", "127.0.0.1",
-                                   "--port", str(flight_port), "--health-port", "0", "--username", "pilot",
-                                   "--init-sql-commands-file", server_init, "--print-queries", "--log-format",
-                                   "json", "--query-log-level", "info", "--log-file", query_log],
-                                      env=env, stdout=startup, stderr=subprocess.STDOUT)
+            server = subprocess.Popen(
+                [
+                    gizmo_bin / "gizmosql_server",
+                    "--hostname",
+                    "127.0.0.1",
+                    "--port",
+                    str(flight_port),
+                    "--health-port",
+                    "0",
+                    "--username",
+                    "pilot",
+                    "--init-sql-commands-file",
+                    server_init,
+                    "--print-queries",
+                    "--log-format",
+                    "json",
+                    "--query-log-level",
+                    "info",
+                    "--log-file",
+                    query_log,
+                ],
+                env=env,
+                stdout=startup,
+                stderr=subprocess.STDOUT,
+            )
         try:
-            client = (gizmo_bin / "gizmosql_client", "--host", "127.0.0.1", "--port", flight_port,
-                      "--username", "pilot", "--no-init", "--quiet", "--csv", "--command")
+            client = (
+                gizmo_bin / "gizmosql_client",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                flight_port,
+                "--username",
+                "pilot",
+                "--no-init",
+                "--quiet",
+                "--csv",
+                "--command",
+            )
             deadline = time.monotonic() + 35
             while time.monotonic() < deadline and server.poll() is None:
                 try:
-                    with socket.create_connection(("127.0.0.1", flight_port), timeout=0.2):
+                    with socket.create_connection(
+                        ("127.0.0.1", flight_port), timeout=0.2
+                    ):
                         break
                 except OSError:
                     time.sleep(0.12)
             else:
-                details = query_log.read_text() if query_log.exists() else startup_log.read_text()
+                details = (
+                    query_log.read_text()
+                    if query_log.exists()
+                    else startup_log.read_text()
+                )
                 self.fail(details[-3000:] or "server did not start")
 
-            worker = (sys.executable, REPO / "scripts/analytics_materializer.py", "--query-log", query_log,
-                      "--source-init-sql", worker_init, "--source-table", ".".join(SOURCE),
-                      "--source-table", "lake.main.regions", "--source-table", "lake.main.inventory",
-                      "--source-view", "lake.main.filtered_orders", "--source-view", "lake.main.pilot_orders",
-                      "--source-epoch", "integration", "--state-dir", state, "--user", "pilot",
-                      "--min-runs", 2, "--min-duration-ms", 0, "--once")
+            worker = (
+                sys.executable,
+                REPO / "scripts/analytics_materializer.py",
+                "--query-log",
+                query_log,
+                "--source-init-sql",
+                worker_init,
+                "--source-table",
+                ".".join(SOURCE),
+                "--source-table",
+                "lake.main.regions",
+                "--source-table",
+                "lake.main.inventory",
+                "--source-view",
+                "lake.main.filtered_orders",
+                "--source-view",
+                "lake.main.pilot_orders",
+                "--source-epoch",
+                "integration",
+                "--state-dir",
+                state,
+                "--user",
+                "pilot",
+                "--min-runs",
+                2,
+                "--min-duration-ms",
+                0,
+                "--once",
+            )
             if exercise_execution:
                 worker += ("--publish",)
 
@@ -186,23 +326,40 @@ class FlightSQLMaterializationTest(unittest.TestCase):
 
             def flight_query(expected, *, hit):
                 before = artifact_hits()
-                self.assertIn(str(expected), self.command(*client, VIEW_QUERY, env=env).splitlines())
-                self.assertEqual(artifact_hits() - before, int(hit), query_log.read_text()[-4000:])
+                self.assertIn(
+                    str(expected), self.command(*client, VIEW_QUERY, env=env).splitlines()
+                )
+                self.assertEqual(
+                    artifact_hits() - before, int(hit), query_log.read_text()[-4000:]
+                )
 
             def artifacts():
-                with duckdb.connect(str(state / "artifacts.duckdb"), read_only=True) as store:
+                with duckdb.connect(
+                    str(state / "artifacts.duckdb"), read_only=True
+                ) as store:
                     rows = store.execute("""
                         SELECT name, source_table, snapshot_id, epoch_us(refreshed_at)
                         FROM materializations
                     """).fetchall()
                     return {
-                        source: (name, snapshot, refreshed, store.execute(f'SELECT * FROM "{name}"').fetchone()[0])
+                        source: (
+                            name,
+                            snapshot,
+                            refreshed,
+                            store.execute(f'SELECT * FROM "{name}"').fetchone()[0],
+                        )
                         for name, source, snapshot, refreshed in rows
                     }
 
             def checked_snapshots():
-                with duckdb.connect(str(state / "artifacts.duckdb"), read_only=True) as store:
-                    return dict(store.execute("SELECT name, snapshot_id FROM materialization_refresh_state").fetchall())
+                with duckdb.connect(
+                    str(state / "artifacts.duckdb"), read_only=True
+                ) as store:
+                    return dict(
+                        store.execute(
+                            "SELECT name, snapshot_id FROM materialization_refresh_state"
+                        ).fetchall()
+                    )
 
             self.assertIn("11", self.command(*client, VIEW_QUERY, env=env).splitlines())
             self.command(*client, INVENTORY_QUERY, env=env)
@@ -217,16 +374,21 @@ class FlightSQLMaterializationTest(unittest.TestCase):
             if exercise_execution:
                 flight_query(11, hit=True)
                 before = artifact_hits()
-                self.assertIn("1", self.command(*client, INVENTORY_QUERY, env=env).splitlines())
+                self.assertIn(
+                    "1", self.command(*client, INVENTORY_QUERY, env=env).splitlines()
+                )
                 self.assertEqual(artifact_hits() - before, 1)
                 # A log rollover can leave only cache hits in the history window.
-                hit_events = [line for line in query_log.read_text().splitlines()
-                              if json.loads(line).get("status") == "hit"]
+                hit_events = [
+                    line
+                    for line in query_log.read_text().splitlines()
+                    if json.loads(line).get("status") == "hit"
+                ]
                 after_rollover = root / "rollover.jsonl"
                 after_rollover.write_text("\n".join(hit_events) + "\n")
                 self.command(*worker, "--query-log", after_rollover)
                 self.assertEqual(artifacts(), first)
-                blob, = (state / "published").glob(f"{first[orders][0]}_*.arrow")
+                (blob,) = (state / "published").glob(f"{first[orders][0]}_*.arrow")
                 hidden = blob.with_suffix(".held")
                 blob.rename(hidden)
                 try:
@@ -234,15 +396,28 @@ class FlightSQLMaterializationTest(unittest.TestCase):
                 finally:
                     hidden.rename(blob)
                 before = artifact_hits()
-                self.assertIn("11", self.command(*client, f"BEGIN; {VIEW_QUERY}; ROLLBACK;", env=env).splitlines())
+                self.assertIn(
+                    "11",
+                    self.command(
+                        *client, f"BEGIN; {VIEW_QUERY}; ROLLBACK;", env=env
+                    ).splitlines(),
+                )
                 self.assertEqual(artifact_hits(), before)
                 shadowed = f"CREATE TEMP MACRO sum(x) AS CAST(COUNT(x) AS HUGEINT); {VIEW_QUERY};"
                 self.assertIn("1", self.command(*client, shadowed, env=env).splitlines())
                 self.assertEqual(artifact_hits(), before)
-                changed_settings = f"SET SESSION default_collation = 'nocase'; {VIEW_QUERY};"
-                self.assertIn("11", self.command(*client, changed_settings, env=env).splitlines())
+                changed_settings = (
+                    f"SET SESSION default_collation = 'nocase'; {VIEW_QUERY};"
+                )
+                self.assertIn(
+                    "11", self.command(*client, changed_settings, env=env).splitlines()
+                )
                 self.assertEqual(artifact_hits(), before)
-                path_reads = self.run_command(*client, f"SELECT content FROM read_blob('{state / 'identity.key'}')", env=env)
+                path_reads = self.run_command(
+                    *client,
+                    f"SELECT content FROM read_blob('{state / 'identity.key'}')",
+                    env=env,
+                )
                 self.assertIn("disabled by configuration", path_reads.stdout)
             with duckdb.connect(str(state / "artifacts.duckdb"), read_only=True) as store:
                 # Follow base-table edges in the downstream direction as Modeler does.
@@ -255,8 +430,15 @@ class FlightSQLMaterializationTest(unittest.TestCase):
                     )
                     SELECT relation, depth FROM downstream ORDER BY depth
                 """).fetchall()
-                self.assertEqual(paths, [("lake.main.orders", 0), ("lake.main.filtered_orders", 1),
-                                         (orders, 2), (first[orders][0], 3)])
+                self.assertEqual(
+                    paths,
+                    [
+                        ("lake.main.orders", 0),
+                        ("lake.main.filtered_orders", 1),
+                        (orders, 2),
+                        (first[orders][0], 3),
+                    ],
+                )
             self.command(*worker)
             self.assertEqual(artifacts(), first)
 
@@ -279,7 +461,9 @@ class FlightSQLMaterializationTest(unittest.TestCase):
 
                 writer.execute("INSERT INTO lake.main.orders VALUES ('EU', 5)")
                 if exercise_execution:
-                    flight_query(16, hit=False)  # the published artifact still contains 11
+                    flight_query(
+                        16, hit=False
+                    )  # the published artifact still contains 11
                     self.assertEqual(artifacts(), first)
                 self.assertEqual(self.command(*worker).count("published"), 1)
                 second = artifacts()
@@ -322,7 +506,9 @@ class FlightSQLMaterializationTest(unittest.TestCase):
                 self.assertIn("refresh failed", result.stdout)
                 self.assertEqual(artifacts(), fifth)
                 if exercise_execution:
-                    self.assertFalse(list((state / "published").glob(f"{first[orders][0]}_*.arrow")))
+                    self.assertFalse(
+                        list((state / "published").glob(f"{first[orders][0]}_*.arrow"))
+                    )
         finally:
             server.terminate()
             try:
@@ -332,8 +518,14 @@ class FlightSQLMaterializationTest(unittest.TestCase):
                 server.wait(timeout=10)
 
     def run_command(self, *args, env=None):
-        return subprocess.run([str(arg) for arg in args], env=env, timeout=30, text=True,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return subprocess.run(
+            [str(arg) for arg in args],
+            env=env,
+            timeout=30,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
 
     def command(self, *args, env=None):
         result = self.run_command(*args, env=env)
