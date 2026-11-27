@@ -863,6 +863,12 @@ set(GIZMOSQL_DUCKDB_SERVER_SRCS
         src/duckdb/duckdb_tables_schema_batch_reader.cpp
         src/duckdb/duckdb_arrow_ingest.cpp)
 
+# The optional refresh/read pilot uses DuckDB 1.5 catalog internals.
+if(GIZMOSQL_DUCKDB_CHANNEL STREQUAL "stable" AND DUCKDB_GIT_TAG MATCHES "^v1[.]5[.]")
+    list(APPEND GIZMOSQL_DUCKDB_SERVER_SRCS src/duckdb/analytics_cache.cpp)
+    set(GIZMOSQL_WITH_ANALYTICS_CACHE ON)
+endif()
+
 # Enterprise vs Core: instrumentation source files
 if(GIZMOSQL_ENTERPRISE)
     # Enterprise edition: instrumentation from enterprise directory
@@ -898,6 +904,10 @@ add_library(gizmosqlserver STATIC
         ${GIZMOSQL_DUCKDB_SERVER_SRCS}
         ${GIZMOSQL_ENTERPRISE_SRCS}
 )
+
+if(GIZMOSQL_WITH_ANALYTICS_CACHE)
+    target_compile_definitions(gizmosqlserver PRIVATE GIZMOSQL_WITH_ANALYTICS_CACHE)
+endif()
 
 # Ensure proto generation happens before compiling gizmosqlserver
 add_dependencies(gizmosqlserver health_proto_gen)

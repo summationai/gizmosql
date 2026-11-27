@@ -84,6 +84,7 @@ nav:
       - DuckLake Integration: ducklake.md
       - Geometry & Spatial: geometry.md
   - Features:
+      - Automatic Analytics Pilot: analytics_materialization.md
       - Eager DDL/DML Execution: eager_execution.md
       - Prometheus Metrics (Enterprise): monitoring.md
       - SET Commands: set_commands.md

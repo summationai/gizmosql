@@ -229,23 +229,27 @@ StatementInstrumentation::StatementInstrumentation(
 
 ExecutionInstrumentation::ExecutionInstrumentation(
     std::shared_ptr<InstrumentationManager> manager, const std::string& execution_id,
-    const std::string& statement_id, const std::string& bind_parameters)
+    const std::string& statement_id, const std::string& bind_parameters,
+    bool materialization_hit, std::chrono::system_clock::time_point started)
     : manager_(std::move(manager)),
       execution_id_(execution_id),
       statement_id_(statement_id),
-      start_timestamp_(std::chrono::system_clock::now()) {
+      start_timestamp_(started) {
   if (!manager_ || !manager_->IsEnabled()) {
     return;
   }
 
-  manager_->QueueWrite([execution_id, statement_id, bind_parameters](duckdb::Connection& conn) {
+  manager_->QueueWrite([execution_id, statement_id, bind_parameters,
+                        materialization_hit](duckdb::Connection& conn) {
     ExecuteInstrumentationWrite(
         conn, "record execution start",
         "INSERT INTO sql_executions (execution_id, statement_id, "
-        "bind_parameters, execution_start_time, status, rows_fetched) "
-        "VALUES ($1, $2, $3, now(), 'executing', 0)",
+        "bind_parameters, execution_start_time, status, rows_fetched, "
+        "materialization_hit) "
+        "VALUES ($1, $2, $3, now(), 'executing', 0, $4)",
         {duckdb::Value::UUID(execution_id), duckdb::Value::UUID(statement_id),
-         bind_parameters.empty() ? duckdb::Value() : duckdb::Value(bind_parameters)});
+         bind_parameters.empty() ? duckdb::Value() : duckdb::Value(bind_parameters),
+         duckdb::Value::BOOLEAN(materialization_hit)});
   });
 }
 

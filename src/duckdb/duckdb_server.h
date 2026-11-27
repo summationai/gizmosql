@@ -60,6 +60,8 @@ class DuckDBFlightSqlServer : public flight::sql::FlightSqlServerBase,
   void SampleMetrics(gizmosql::enterprise::MetricsRegistry& registry);
 #endif
 
+  arrow::Status ConfigureAnalyticsCache(const std::string& config_path);
+
   static arrow::Result<std::shared_ptr<DuckDBFlightSqlServer>> Create(
       const std::string& path, const bool& read_only, const bool& print_queries,
       const int32_t& query_timeout, const arrow::util::ArrowLogLevel& query_log_level,

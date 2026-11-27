@@ -19,6 +19,10 @@
 #include "duckdb_static_extensions.h"
 #include "duckdb_compat.h"
 
+#ifdef GIZMOSQL_WITH_ANALYTICS_CACHE
+#include "analytics_cache.h"
+#endif
+
 #include <duckdb.hpp>
 
 #include <boost/algorithm/string.hpp>
@@ -72,6 +76,7 @@
 #include "enterprise/instrumentation/instrumentation_records.h"
 #include "enterprise/catalog_permissions/catalog_permissions_handler.h"
 #include "enterprise/enterprise_features.h"
+#include "enterprise/metrics/metrics_registry.h"
 #include "enterprise/metrics/metrics_service.h"
 #endif
 
@@ -87,6 +92,38 @@ inline std::shared_ptr<::gizmosql::TelemetrySpanScope> ActivateTelemetryScope(
     const flight::ServerCallContext& context) {
   return ::gizmosql::ActivateTelemetrySpan(context);
 }
+
+#if defined(GIZMOSQL_WITH_ANALYTICS_CACHE) && defined(GIZMOSQL_ENTERPRISE)
+class InstrumentedMaterializationReader final : public arrow::RecordBatchReader {
+ public:
+  InstrumentedMaterializationReader(std::shared_ptr<arrow::RecordBatchReader> reader,
+                                    std::shared_ptr<InstrumentationManager> manager,
+                                    const std::string& statement_id,
+                                    std::chrono::system_clock::time_point started)
+      : reader_(std::move(reader)),
+        execution_(std::move(manager),
+                   boost::uuids::to_string(boost::uuids::random_generator()()),
+                   statement_id, "", true, started) {
+    execution_.SetCompleted();
+  }
+
+  std::shared_ptr<arrow::Schema> schema() const override { return reader_->schema(); }
+
+  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* out) override {
+    auto status = reader_->ReadNext(out);
+    if (!status.ok()) {
+      execution_.SetError(status.ToString());
+    } else if (*out) {
+      execution_.IncrementRowsFetched((*out)->num_rows());
+    }
+    return status;
+  }
+
+ private:
+  std::shared_ptr<arrow::RecordBatchReader> reader_;
+  ExecutionInstrumentation execution_;
+};
+#endif
 
 class DuckDBTransactionGuard {
  public:
@@ -1017,6 +1054,9 @@ class DuckDBFlightSqlServer::Impl {
   int32_t session_idle_timeout_seconds_ = 0;  // 0 = idle eviction off
   bool block_unredacted_secrets_ = true;
   std::shared_ptr<SensitivePathPolicy> sensitive_path_policy_;  // nullptr = guard off
+#ifdef GIZMOSQL_WITH_ANALYTICS_CACHE
+  std::unique_ptr<AnalyticsCache> analytics_cache_;
+#endif
 
   std::unordered_map<std::string, std::shared_ptr<ClientSession>> client_sessions_;
   std::unordered_map<std::string, std::string> open_transactions_;
@@ -1760,6 +1800,16 @@ class DuckDBFlightSqlServer::Impl {
     return std::make_unique<flight::RecordBatchStream>(reader);
   }
 
+  Status ConfigureAnalyticsCache(const std::string& config_path) {
+#ifdef GIZMOSQL_WITH_ANALYTICS_CACHE
+    ARROW_ASSIGN_OR_RAISE(analytics_cache_, AnalyticsCache::Open(config_path));
+    return Status::OK();
+#else
+    return Status::NotImplemented(
+        "Analytics reuse requires the stable DuckDB 1.5 channel");
+#endif
+  }
+
   Result<std::unique_ptr<flight::FlightInfo>> GetFlightInfoStatement(
       const flight::ServerCallContext& context, const sql::StatementQuery& command,
       const flight::FlightDescriptor& descriptor) {
@@ -1779,8 +1829,13 @@ class DuckDBFlightSqlServer::Impl {
     }
     statement->SetCallContext(&context);
     ARROW_ASSIGN_OR_RAISE(auto schema, statement->GetSchema())
-    ARROW_ASSIGN_OR_RAISE(auto ticket,
-                          EncodeTransactionQuery(query, command.transaction_id))
+    auto transaction_id = command.transaction_id;
+#ifdef GIZMOSQL_WITH_ANALYTICS_CACHE
+    if (analytics_cache_ && transaction_id.empty()) {
+      transaction_id = analytics_cache_->TicketProof(*client_session, query, *schema);
+    }
+#endif
+    ARROW_ASSIGN_OR_RAISE(auto ticket, EncodeTransactionQuery(query, transaction_id))
     std::vector<flight::FlightEndpoint> endpoints{
         flight::FlightEndpoint{std::move(ticket), {}, std::nullopt, ""}};
     ARROW_ASSIGN_OR_RAISE(
@@ -1804,6 +1859,62 @@ class DuckDBFlightSqlServer::Impl {
         DuckDBStatement::Create(client_session, sql, std::nullopt, print_queries_,
                                 nullptr, "DoGetStatement", false))
     statement->SetCallContext(&context);
+#ifdef GIZMOSQL_WITH_ANALYTICS_CACHE
+    // Use the normal reader for queueing, engine profiling, and caller timeouts.
+    if (analytics_cache_ && transaction_id.starts_with("mv1_") &&
+        !context.is_cancelled() && admission_controller_.Limit() == 0 &&
+        client_session->capture_query_profile.load().value_or(
+            GetCaptureQueryProfile(*client_session)) == QueryProfileMode::kOff &&
+        client_session->query_timeout.load().value_or(
+            GetQueryTimeout(*client_session).ValueOr(1)) == 0) {
+      if (auto prepared = statement->GetDuckDBStmt()) {
+        ScopedSqlInFlight in_flight(client_session);
+        ARROW_ASSIGN_OR_RAISE(auto schema, statement->GetSchema());
+        const auto lookup_start = std::chrono::steady_clock::now();
+#ifdef GIZMOSQL_ENTERPRISE
+        const auto execution_start = std::chrono::system_clock::now();
+#endif
+        auto cached = analytics_cache_->TryRead(*client_session, sql, transaction_id,
+                                                schema, *prepared);
+        if (cached && !context.is_cancelled() && !client_session->kill_requested.load()) {
+          const auto active = client_session->ActiveSqlHandle();
+          if (active && *active == statement->GetStatementId()) {
+            client_session->SetActiveSqlHandle("");
+          }
+          const auto lookup_ms = std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - lookup_start)
+                                     .count();
+          const auto log_level = client_session->query_log_level.load().value_or(
+              GetQueryLogLevel(*client_session)
+                  .ValueOr(arrow::util::ArrowLogLevel::ARROW_WARNING));
+          if (GetPrintQueries(*client_session).ValueOr(false) &&
+              log_level <= arrow::util::ArrowLogLevel::ARROW_INFO) {
+            GIZMOSQL_LOGKV_SESSION(INFO, client_session, "Analytics materialization hit",
+                                   {"kind", "analytics"}, {"status", "hit"},
+                                   {"lookup_ms", lookup_ms},
+                                   {"sql", redact_sql_for_logs(sql)});
+          } else {
+            GIZMOSQL_LOGKV_SESSION(INFO, client_session, "Analytics materialization hit",
+                                   {"kind", "analytics"}, {"status", "hit"},
+                                   {"lookup_ms", lookup_ms});
+          }
+          ::gizmosql::metrics::RecordQueryExecution("SELECT", "OK", lookup_ms);
+#ifdef GIZMOSQL_ENTERPRISE
+          if (auto metrics = client_session->metrics) {
+            metrics->StatementFinished(enterprise::StatementKind::Read, "",
+                                       lookup_ms / 1000.0);
+          }
+          if (instrumentation_manager_ && statement->GetInstrumentation()) {
+            cached = std::make_shared<InstrumentedMaterializationReader>(
+                std::move(cached), instrumentation_manager_, statement->GetStatementId(),
+                execution_start);
+          }
+#endif
+          return std::make_unique<flight::RecordBatchStream>(std::move(cached));
+        }
+      }
+    }
+#endif
     ARROW_ASSIGN_OR_RAISE(auto reader, DuckDBStatementBatchReader::Create(statement))
 
     return std::make_unique<flight::RecordBatchStream>(reader);
@@ -3110,6 +3221,10 @@ void DuckDBFlightSqlServer::SetRejectUnknownSessions(bool reject) {
 
 bool DuckDBFlightSqlServer::BlockUnredactedSecrets() const {
   return impl_->BlockUnredactedSecrets();
+}
+
+Status DuckDBFlightSqlServer::ConfigureAnalyticsCache(const std::string& config_path) {
+  return impl_->ConfigureAnalyticsCache(config_path);
 }
 
 Status DuckDBFlightSqlServer::ExecuteSql(const std::string& sql) const {

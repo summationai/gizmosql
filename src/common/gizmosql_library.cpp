@@ -942,6 +942,11 @@ arrow::Result<std::shared_ptr<flight::sql::FlightSqlServerBase>> FlightSQLServer
       }
     }
 
+    const auto analytics_config = std::getenv("GIZMOSQL_ANALYTICS_CACHE_CONFIG");
+    if (analytics_config && *analytics_config) {
+      ARROW_RETURN_NOT_OK(duckdb_server->ConfigureAnalyticsCache(analytics_config));
+    }
+
 #ifdef GIZMOSQL_ENTERPRISE
     // Now initialize instrumentation manager using the server's DuckDB instance (if enabled)
     if (enable_instrumentation) {
